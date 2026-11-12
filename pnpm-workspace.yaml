@@ -1,0 +1,7 @@
+packages:
+  - .
+storeDir: .p0/pnpm-store
+cacheDir: .p0/pnpm-cache
+ignoreScripts: true
+strictPeerDependencies: true
+packageImportMethod: copy

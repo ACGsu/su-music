@@ -1,0 +1,26 @@
+# Dependency and generated build/release files.
+node_modules/
+out/
+release/
+# Local test cases, fixtures, regression and diagnostic scripts.
+/tests/
+# Disposable test, tool and historical verification profiles.
+.v0/
+.p0/
+.p1/
+.p2/
+.p3/
+.p4/
+# Legacy local installation, if present.
+/p0/
+*.log
+*.tmp
+*.tsbuildinfo
+# Runtime credentials, databases and cached audio never belong in Git.
+private/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+credentials.bin
+*.audio
+*.part

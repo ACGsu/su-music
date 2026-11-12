@@ -1,0 +1,37 @@
+{
+  "name": "su-music",
+  "version": "0.4.0-rc.1",
+  "private": true,
+  "description": "Su Music Windows music player",
+  "author": "Su Music",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "out/main/index.cjs",
+  "packageManager": "pnpm@11.22.0",
+  "engines": { "node": ">=24.19.0 <25" },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "preview": "electron-vite preview",
+    "setup:electron": "node scripts/prepare-electron.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
+    "test": "node scripts/test.mjs",
+    "build": "pnpm typecheck && electron-vite build",
+    "package": "node scripts/package.mjs",
+    "smoke": "node scripts/test.mjs --smoke",
+    "check": "node scripts/check.mjs",
+    "smoke:desktop": "node scripts/test.mjs --desktop",
+    "audit:package": "node scripts/audit-package.mjs",
+    "audit:licenses": "node scripts/audit-licenses.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@vitejs/plugin-vue": "6.0.10",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "typescript": "6.0.3",
+    "vite": "8.3.6",
+    "vue": "3.5.45",
+    "vue-tsc": "3.3.14"
+  }
+}

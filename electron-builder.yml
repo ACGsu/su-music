@@ -1,0 +1,33 @@
+appId: io.su.music
+productName: Su Music
+electronDist: node_modules/electron/dist
+directories:
+  output: release/${version}
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - README.md
+  - docs/AGENT.md
+  - docs/KNOWN_LIMITATIONS.md
+  - build/icon.ico
+  - licenses/**/*
+asar: true
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  signAndEditExecutable: true
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
+  shortcutName: Su Music
+  artifactName: Su-Music-${version}-x64-setup.${ext}
+publish: null
