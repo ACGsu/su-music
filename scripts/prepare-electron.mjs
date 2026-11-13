@@ -10,7 +10,7 @@ const metadata=JSON.parse(fs.readFileSync(packageFile,'utf8')),project=JSON.pars
 if(metadata.version!==project.devDependencies.electron)throw new Error('ELECTRON_VERSION_MISMATCH');
 const {downloadArtifact}=createRequire(packageFile)('@electron/get');
 const checksums=JSON.parse(fs.readFileSync(path.join(directory,'checksums.json'),'utf8'));
-const zip=await downloadArtifact({version:metadata.version,platform:'win32',arch:'x64',artifactName:'electron',checksums,cacheRoot:path.resolve('.p0/electron-cache')});
+const zip=await downloadArtifact({version:metadata.version,platform:'win32',arch:'x64',artifactName:'electron',checksums,cacheRoot:path.resolve('.tmp/cache/electron')});
 const archiveHash=crypto.createHash('sha256').update(fs.readFileSync(zip)).digest('hex');
 const artifact='electron-v'+metadata.version+'-win32-x64.zip';
 if(checksums[artifact]!==archiveHash)throw new Error('ELECTRON_ARCHIVE_CHECKSUM_MISMATCH');
@@ -22,6 +22,6 @@ const declaration=path.join(destination,'electron.d.ts');if(fs.existsSync(declar
 fs.writeFileSync(path.join(directory,'path.txt'),'electron.exe');
 const version=fs.readFileSync(path.join(destination,'version'),'utf8').trim().replace(/^v/,'');
 if(version!==metadata.version)throw new Error('ELECTRON_DISTRIBUTION_VERSION_MISMATCH');
-fs.mkdirSync('.p0',{recursive:true});
+fs.mkdirSync('.tmp/cache',{recursive:true});
 const record={at:new Date().toISOString(),version,platform:'win32',arch:'x64',archive:artifact,archiveSha256:archiveHash,bundledChecksumVerified:true,extractedInsideWorkspace:true};
-fs.writeFileSync('.p0/electron-runtime.json',JSON.stringify(record,null,2));console.log(JSON.stringify(record));
+fs.writeFileSync('.tmp/cache/electron-runtime.json',JSON.stringify(record,null,2));console.log(JSON.stringify(record));

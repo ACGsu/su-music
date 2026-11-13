@@ -30,6 +30,8 @@ const api: DesktopAPI = Object.freeze({
   chooseCacheDirectory:()=>ipcRenderer.invoke(CHANNELS.chooseCache),
   resetCacheDirectory:()=>ipcRenderer.invoke(CHANNELS.resetCache),
   clearAudioCache:()=>ipcRenderer.invoke(CHANNELS.clearCache),
+  checkUpdate:()=>ipcRenderer.invoke(CHANNELS.checkUpdate),
+  applyUpdate:()=>ipcRenderer.invoke(CHANNELS.applyUpdate),
   onPlayerChanged:(callback:(state:PlayerState)=>void)=>{
     const listener=(_event:unknown,state:PlayerState):void=>callback(state)
     ipcRenderer.on(CHANNELS.playerChanged,listener);return()=>ipcRenderer.removeListener(CHANNELS.playerChanged,listener)

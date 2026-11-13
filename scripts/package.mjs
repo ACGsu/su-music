@@ -12,7 +12,7 @@ const project=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'))
 if(fs.readFileSync(path.join(distribution,'version'),'utf8').trim().replace(/^v/,'')!==project.devDependencies.electron)throw new Error('ELECTRON_DISTRIBUTION_VERSION_MISMATCH');
 const output=releaseDirectory;
 if(fs.existsSync(output)&&!fs.realpathSync(output).startsWith(root+path.sep))throw new Error('BUILD_OUTPUT_OUTSIDE_WORKSPACE');
-const env={...process.env,ELECTRON_BUILDER_CACHE:path.join(root,'.p0/builder-cache'),CSC_IDENTITY_AUTO_DISCOVERY:'false'};
+const env={...process.env,ELECTRON_BUILDER_CACHE:path.join(root,'.tmp/cache/builder'),CSC_IDENTITY_AUTO_DISCOVERY:'false'};
 delete env.ELECTRON_RUN_AS_NODE;
-const result=spawnSync(process.execPath,[require.resolve('electron-builder/cli.js'),'--win','nsis','--x64','--publish','never'],{cwd:root,stdio:'inherit',windowsHide:true,env});
+const result=spawnSync(process.execPath,[require.resolve('electron-builder/cli.js'),'--win','nsis','portable','--x64','--publish','never'],{cwd:root,stdio:'inherit',windowsHide:true,env});
 process.exitCode=result.status??1;

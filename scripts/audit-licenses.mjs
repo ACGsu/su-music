@@ -51,5 +51,5 @@ const report={at:new Date().toISOString(),direct,installedPackageCount:seen.size
   packagesWithoutBundledLicenseText:[...seen.values()].filter(item=>!item.licenseFiles.length).map(item=>item.name+'@'+item.version),
   lockfileSha256:crypto.createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex'),
   packageStoreObserved:moduleMetadata.storeDir,runtimeNativeDatabase:'node:sqlite bundled with Electron; no separate native database addon'};
-fs.mkdirSync('.p0',{recursive:true});fs.writeFileSync('.p0/dependency-audit.json',JSON.stringify(report,null,2));
+fs.mkdirSync('.tmp/audit',{recursive:true});fs.writeFileSync('.tmp/audit/dependencies.json',JSON.stringify(report,null,2));
 console.log(JSON.stringify({direct:direct.map(({name,version,license})=>({name,version,license})),installedPackageCount:seen.size,unidentifiedLicenses:unresolved,packagesWithoutBundledLicenseText:report.packagesWithoutBundledLicenseText.length,lockfileSha256:report.lockfileSha256}));

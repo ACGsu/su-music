@@ -10,6 +10,7 @@ files:
   - README.md
   - docs/AGENT.md
   - docs/KNOWN_LIMITATIONS.md
+  - docs/TESTING.md
   - build/icon.ico
   - licenses/**/*
 asar: true
@@ -17,6 +18,8 @@ npmRebuild: false
 win:
   target:
     - target: nsis
+      arch: [x64]
+    - target: portable
       arch: [x64]
   icon: build/icon.ico
   signAndEditExecutable: true
@@ -30,4 +33,7 @@ nsis:
   deleteAppDataOnUninstall: false
   shortcutName: Su Music
   artifactName: Su-Music-${version}-x64-setup.${ext}
+portable:
+  artifactName: Su-Music-${version}-x64-portable.${ext}
+  requestExecutionLevel: user
 publish: null

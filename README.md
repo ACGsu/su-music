@@ -8,7 +8,7 @@ Windows x64 音乐播放器，当前版本 `0.4.0-rc.1`。支持标准版酷狗�
 
 运行 `release/0.4.0-rc.1/Su-Music-0.4.0-rc.1-x64-setup.exe`，选择安装目录，再启动 Su Music。安装面向当前 Windows 用户。升级前关闭正在运行的 Su Music；使用同一 Windows 用户可继续读取本机曲库、外观、版本选择和缓存目录设置。
 
-也可直接运行 `release/0.4.0-rc.1/win-unpacked/Su Music.exe`。
+免安装使用可运行 `release/0.4.0-rc.1/Su-Music-0.4.0-rc.1-x64-portable.exe`。首次运行会在 Portable EXE 旁创建 `Data/`，移动或备份时需要将 EXE 与 `Data/` 一起复制。也可直接运行 `release/0.4.0-rc.1/win-unpacked/Su Music.exe`，该目录版仍使用 `%APPDATA%\Su Music\`。
 
 首次启动是空曲库。已有账号曲库保存在本机，启动后可先浏览。发行目录提供本说明、`docs/`、`licenses/` 及校验文件；本版本在当前 Windows 11 x64 环境验收，其他系统范围见 `docs/KNOWN_LIMITATIONS.md`。
 
@@ -79,7 +79,9 @@ Windows x64 音乐播放器，当前版本 `0.4.0-rc.1`。支持标准版酷狗�
 | 缓存目录不可写 | 换一个可写目录或恢复默认目录；在线资源可继续尝试。 |
 | 本地文件缺失或已改变 | 重新添加或关联文件。 |
 
-账号资料位于 `%APPDATA%\Su Music\`。升级及普通卸载保留该资料；备份时先关闭应用，并另行保存自选缓存和本地音频。许可与来源可在“账号与设置”查看，也随发行文件提供。
+安装版账号资料位于 `%APPDATA%\Su Music\`，Portable 版账号资料位于其旁边的 `Data/`。升级及普通卸载保留资料；备份时先关闭应用，并另行保存自选缓存和本地音频。许可与来源可在“账号与设置”查看，也随发行文件提供。
+
+“账号与设置 → 软件更新”可手动检查 [ACGsu/su-music](https://github.com/ACGsu/su-music) 的 GitHub Release。应用不会后台检查或自动下载；发现更高版本后，由用户点击“一键更新”。安装版只使用对应 NSIS 安装包，Portable 版只替换对应 Portable EXE，下载完成前会核对随 Release 提供的 SHA-256 文件。预发布版本会继续接收预发布及正式更新，正式版本只接收正式更新。
 
 ## 开发
 
@@ -106,15 +108,21 @@ node scripts/audit-package.mjs
 
 检查包括主进程／Vue 类型和构建；本机存在单元测试时一并执行，缺少 `tests/` 时明确记录跳过测试。`tests/`（含样本及 `tests/scripts/` 中的回归、安装验证与诊断脚本）仅保存在本机，不随 Git 提交，也不打包；从 Git 检出的源码可直接构建，但不包含这些测试资料。
 
-本机测试资料齐备时可用 `pnpm test`、`pnpm smoke`、`pnpm smoke:desktop`；验证发行程序可运行 `node scripts/test.mjs --desktop --packaged`，随后运行 `node scripts/audit-package.mjs --smoke`。桌面回归使用本机固定样本、模拟账号及生成音频，独立于真实网络验证。临时结果按需写入被 Git 忽略的 `.p0/`–`.p4/`。
+本机单元测试使用 `pnpm test`。`pnpm smoke` 与 `pnpm smoke:desktop` 是同一个桌面回归入口，任选一个即可；按导入与安全、账号、播放、布局执行一次完整计划。首次启动和恢复分别检查，布局覆盖 100%／125%／150% 三档缩放，排序和快捷键等功能检查仅执行一次。覆盖归属及去重说明见 [docs/TESTING.md](docs/TESTING.md)。
 
-发行目录取自 `package.json` 的版本号，当前为 `release/0.4.0-rc.1/`。同一版本重新打包更新该目录，版本升级创建新版本目录，已有版本保留。打包不发布或上传；README、开发说明、限制和许可按源码中的目录结构随包提供，审计生成安装包 SHA-256。隔离安装验证及其他开发命令见 `docs/AGENT.md`。
+可用 `node scripts/test.mjs --desktop --list` 预览计划，`--suite=playback` 选择单组，`--scale=1.25` 指定布局缩放。`node scripts/test.mjs --dev` 验证 Vite 开发模式的导入与安全。发行程序重新构建、打包后使用 `node scripts/test.mjs --desktop --packaged`，随后运行 `node scripts/audit-package.mjs --smoke`；旧版安装包须先重建，不能套用新的测试结果。
+
+所有测试结果和工具缓存集中到被 Git 忽略的 `.tmp/`。桌面测试成功后自动删除本轮截图、模拟数据库和音频，只保留各运行模式的一份最新摘要；失败时保留本轮资料供诊断。加 `--keep-artifacts` 可保留成功资料。单元测试自动删除自身资料；真实网络验证仍需单独运行。
+
+发行目录取自 `package.json` 的版本号，当前为 `release/0.4.0-rc.1/`。同一版本重新打包更新该目录，版本升级创建新版本目录，已有版本保留。一次打包同时生成 NSIS 安装包和 Portable EXE，但不自动发布或上传；README、开发说明、限制和许可按源码中的目录结构随包提供，审计为两种交付文件分别生成 SHA-256。隔离安装验证及其他开发命令见 `docs/AGENT.md`。
 
 ```text
 release/
 └─ 0.4.0-rc.1/
    ├─ Su-Music-0.4.0-rc.1-x64-setup.exe
    ├─ Su-Music-0.4.0-rc.1-x64-setup.exe.sha256
+   ├─ Su-Music-0.4.0-rc.1-x64-portable.exe
+   ├─ Su-Music-0.4.0-rc.1-x64-portable.exe.sha256
    ├─ win-unpacked/
    │  └─ Su Music.exe
    ├─ README.md
@@ -132,6 +140,6 @@ release/
 
 ## 数据与 Git
 
-正常资料位于 `%APPDATA%\Su Music\`，包括曲库、偏好、本机版本选择、历史及 Windows 加密会话。歌曲缓存目录可独立选择，账号资料不随之迁移。渲染进程没有 Node、任意文件／网络接口或凭据访问；GD 请求共享 45 次／5 分钟预算，酷狗凭据不发送音源服务。
+安装版资料位于 `%APPDATA%\Su Music\`；Portable 版资料位于 Portable EXE 旁的 `Data/`，包括曲库、偏好、本机版本选择、历史及 Windows 加密会话。Windows 加密会话换电脑或 Windows 用户后可能需要重新登录；自选缓存和本地音乐使用绝对路径，不随 Portable 目录自动迁移。渲染进程没有 Node、任意文件／网络接口或凭据访问；GD 请求共享 45 次／5 分钟预算，酷狗凭据不发送音源服务。
 
 Git 保留 `src/`、`scripts/`、`docs/`、`licenses/`、构建配置、锁文件、图标与 README。`tests/`、`node_modules/`、临时结果、安装包、编译产物、日志和私人资料不提交。历史阶段报告、V0 验证器和旧发行产物已清理；后续开发使用 `docs/AGENT.md`，本机回归不依赖这些历史文件。

@@ -6,7 +6,7 @@ export const CHANNELS = Object.freeze({ state: 'su:state', preferences: 'su:pref
   login:'su:login',cancelLogin:'su:cancel-login',logout:'su:logout',sync:'su:sync',cancelSync:'su:cancel-sync',pin:'su:pin',
   player:'su:player',playerCommand:'su:player-command',mediaEvent:'su:media-event',playerChanged:'su:player-changed',playbackLibrary:'su:playback-library',
   importLocal:'su:import-local',removeLocal:'su:remove-local',clearHistory:'su:clear-history',playHistory:'su:play-history',
-  chooseCache:'su:choose-cache',resetCache:'su:reset-cache',clearCache:'su:clear-cache' })
+  chooseCache:'su:choose-cache',resetCache:'su:reset-cache',clearCache:'su:clear-cache',checkUpdate:'su:check-update',applyUpdate:'su:apply-update' })
 export const PAGES = ['library', 'search', 'history', 'review', 'local', 'settings', 'now'] as const
 export type Page = typeof PAGES[number]
 export type ThemeChoice = 'system' | 'day' | 'night'
@@ -48,7 +48,7 @@ export interface Track {
 }
 export interface CollectionDetail { collection: Collection; tracks: Track[] }
 export interface AppState {
-  app: { name: string; version: string; packaged: boolean; testProfile: boolean }
+  app: { name: string; version: string; packaged: boolean; testProfile: boolean; distribution: 'installed' | 'portable' | 'development' }
   preferences: Preferences
   effectiveTheme: EffectiveTheme
   library: { collections: Collection[]; positionCount: number }
@@ -57,6 +57,16 @@ export interface AppState {
   account?: AccountState
 }
 export type Result<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
+export interface UpdateInfo {
+  state: 'up-to-date' | 'available'
+  currentVersion: string
+  latestVersion: string
+  distribution: 'installed' | 'portable' | 'development'
+  releaseName: string | null
+  publishedAt: string | null
+  prerelease: boolean
+  assetName: string | null
+}
 export interface DesktopAPI {
   getState(): Promise<Result<AppState>>
   setPreferences(patch: Partial<Preferences>): Promise<Result<AppState>>
@@ -84,6 +94,8 @@ export interface DesktopAPI {
   chooseCacheDirectory():Promise<Result<AudioCacheState>>
   resetCacheDirectory():Promise<Result<AudioCacheState>>
   clearAudioCache():Promise<Result<AudioCacheState>>
+  checkUpdate():Promise<Result<UpdateInfo>>
+  applyUpdate():Promise<Result<UpdateInfo>>
   onPlayerChanged(callback:(state:PlayerState)=>void):()=>void
   onStateChanged(callback: (state: AppState) => void): () => void
 }

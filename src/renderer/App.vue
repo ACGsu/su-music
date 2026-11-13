@@ -13,7 +13,7 @@ import QueuePanel from './components/QueuePanel.vue'
 import PlaybackPages from './components/PlaybackPages.vue'
 import CacheSettings from './components/CacheSettings.vue'
 import TrackActions from './components/TrackActions.vue'
-import type { AppState, Collection, CollectionDetail, CollectionKind, Page, Preferences } from '../shared/contracts.ts'
+import type { AppState, Collection, CollectionDetail, CollectionKind, Page, Preferences, UpdateInfo } from '../shared/contracts.ts'
 import type { MatchResult, SourceCandidate, TrackReference } from '../shared/music.ts'
 import {validateTrackReference} from '../shared/music.ts'
 import type {AudioCacheState,PlaybackLibrary,PlaybackTarget,PlayerCommand,PlayerState} from '../shared/playback.ts'
@@ -33,12 +33,14 @@ const volume = ref(70)
 const notices = ref('')
 const noticesBusy = ref(false)
 const noticesDialog = ref<HTMLDialogElement | null>(null)
+const updateInfo=ref<UpdateInfo|null>(null),updateBusy=ref(false),updateApplying=ref(false)
 const contentElement=ref<HTMLElement|null>(null)
 let libraryScroll=0,detailRefreshGeneration=0,lastSuccessfulSync:string|null=null,previousScroll=0,playbackRevision=-1,libraryGeneration=0
 let unsubscribe: (() => void) | undefined
 let unsubscribePlayer:(()=>void)|undefined
 const page = computed(() => state.value?.preferences.currentPage || 'library')
 const preferences = computed(() => state.value?.preferences)
+const distributionLabel=computed(()=>state.value?.app.distribution==='portable'?'PORTABLE':state.value?.app.distribution==='installed'?'INSTALLER':'DEVELOPMENT')
 const currentReference=computed(()=>{const current=player.value?.queue.find(item=>item.id===player.value?.currentId);return current?.target.kind==='original'?current.target.reference:player.value?.now?.reference??null})
 const selectedTrack=computed(()=>detail.value?.tracks.find(track=>track.position===selectedPosition.value)??null)
 const myCollections = computed(() => (state.value?.library.collections || []).filter(item => item.kind !== 'shared'))
@@ -135,6 +137,25 @@ async function showNotices(): Promise<void> {
     else error.value = result.error.message
   } finally { noticesBusy.value = false }
 }
+async function checkUpdate():Promise<void>{
+  if(updateBusy.value||updateApplying.value)return
+  updateBusy.value=true;updateInfo.value=null
+  try{const result=await window.suMusic.checkUpdate();if(result.ok){updateInfo.value=result.value;error.value=''}else error.value=result.error.message}
+  catch{error.value='更新检查未能发送，请稍后重试。'}finally{updateBusy.value=false}
+}
+async function applyUpdate():Promise<void>{
+  if(updateApplying.value||updateInfo.value?.state!=='available')return
+  updateApplying.value=true
+  try{const result=await window.suMusic.applyUpdate();if(!result.ok){error.value=result.error.message;updateApplying.value=false}}
+  catch{error.value='更新程序未能启动，请稍后重试。';updateApplying.value=false}
+}
+function updateDescription():string{
+  if(updateApplying.value)return '正在下载并校验更新包，完成后应用会自动退出、更新并重新启动。'
+  if(updateBusy.value)return '正在连接 GitHub Release 检查新版本…'
+  if(updateInfo.value?.state==='available')return `发现 ${updateInfo.value.latestVersion}${updateInfo.value.prerelease?' 预发布版':''}，已匹配当前${updateInfo.value.distribution==='portable'?'便携版':'安装版'}更新包。`
+  if(updateInfo.value?.state==='up-to-date')return `当前 ${updateInfo.value.currentVersion} 已是此更新通道中的最新版本。`
+  return `当前版本 ${state.value?.app.version??'—'}；仅在点击后连接 GitHub，不会后台自动下载。`
+}
 function count(kind: string): number { return kind === 'all' ? myCollections.value.length : myCollections.value.filter(item => item.kind === kind).length }
 function kindLabel(item: Collection): string { return item.kind === 'default' ? '默认歌单' : item.kind === 'created' ? '自建歌单' : item.kind === 'shared' ? '分享导入' : item.subtype === 'album' ? '收藏 · 专辑' : '收藏歌单' }
 function duration(value: number | null): string { return value === null ? '—' : Math.floor(value / 60000) + ':' + String(Math.floor(value / 1000) % 60).padStart(2, '0') }
@@ -217,6 +238,7 @@ onBeforeUnmount(() => { unsubscribe?.();unsubscribePlayer?.(); window.removeEven
         <AccountPanel :state="state?.account" @changed="applyState" /><section class="settings-group"><h2>本机保护</h2><div class="setting-row"><div><h3>本机凭据保护</h3><p>账号凭据由 Windows 加密，保存在本机。</p></div><span class="protection-state"><Icon name="shield" />{{ state?.security.credentialProtectionAvailable ? '加密可用' : '保护暂不可用' }}</span></div></section>
         <section class="settings-group"><h2>在线音源</h2><div class="setting-row"><div><h3>GD 音乐台 · 网易云</h3><p>GD音乐台(music.gdstudio.xyz) 提供在线搜索与资源解析。</p><p>候选匹配和资源读取分别检查，曲目版本差异会保留。</p></div><span class="status-label">已接入</span></div></section>
         <CacheSettings :cache="playbackLibrary?.cache??null" @changed="cacheChanged" />
+        <section class="settings-group"><h2>软件更新</h2><div class="setting-row update-row"><div><h3>GitHub Release</h3><p>{{ updateDescription() }}</p><p v-if="updateInfo?.state==='available'&&updateInfo.releaseName" class="update-release-name">{{ updateInfo.releaseName }}</p></div><div class="update-actions"><button class="button" :disabled="updateBusy||updateApplying||state?.app.distribution==='development'" data-check-update @click="checkUpdate">{{ updateBusy?'正在检查':'检查更新' }}</button><button v-if="updateInfo?.state==='available'" class="button primary" :disabled="updateApplying" data-apply-update @click="applyUpdate">{{ updateApplying?'正在下载':'一键更新' }}</button></div></div></section>
         <section class="settings-group"><h2>外观与显示</h2><div class="setting-row"><div><h3>界面外观</h3><p>昼夜使用同一布局，选择会在下次启动时恢复。</p></div><div class="segmented"><button v-for="item in ([['system', '跟随系统'], ['day', '白天'], ['night', '黑夜']] as const)" :key="item[0]" :data-theme-choice="item[0]" :aria-pressed="preferences?.theme === item[0]" @click="patchPreferences({ theme: item[0] })">{{ item[1] }}</button></div></div><div class="setting-row"><div><h3>歌曲列表密度</h3><p>调整行距，保留曲名和版本信息。</p></div><div class="segmented"><button data-density="comfortable" :aria-pressed="preferences?.density === 'comfortable'" @click="patchPreferences({ density: 'comfortable' })">舒适</button><button data-density="compact" :aria-pressed="preferences?.density === 'compact'" @click="patchPreferences({ density: 'compact' })">紧凑</button></div></div><div class="setting-row"><div><h3>歌单默认视图</h3><p>网格突出封面，列表便于浏览较多歌单。</p></div><div class="segmented"><button :aria-pressed="preferences?.libraryView === 'grid'" @click="patchPreferences({ libraryView: 'grid' })">网格</button><button :aria-pressed="preferences?.libraryView === 'list'" @click="patchPreferences({ libraryView: 'list' })">列表</button></div></div></section>
         <section class="settings-group about-group"><h2>关于</h2><div class="setting-row"><div><h3>Su Music <span class="version-number">{{ state?.app.version }}</span></h3><p>独立音乐库 · Windows 开发版</p></div><button class="button" :disabled="noticesBusy" data-notices @click="showNotices">查看开源许可<Icon name="arrow" /></button></div><details class="runtime-details"><summary>运行环境</summary><dl><div><dt>Electron</dt><dd>{{ state?.environment.electron }}</dd></div><div><dt>Node.js</dt><dd>{{ state?.environment.node }}</dd></div><div><dt>SQLite</dt><dd>{{ state?.environment.sqlite }}</dd></div></dl></details></section>
       </section>
@@ -227,7 +249,7 @@ onBeforeUnmount(() => { unsubscribe?.();unsubscribePlayer?.(); window.removeEven
     <VersionPanel v-if="versionOpen" :reference="versionOpen.reference" :candidate="versionOpen.candidate" :locals="playbackLibrary?.local??[]" @close="versionOpen = null" @checked="matchChecked" @acted="versionActed" />
     <QueuePanel v-if="queueOpen" :player="player" @close="queueOpen=false" @command="command" />
     <PlayerBar :player="player" :volume="volume" :queue-open="queueOpen" @command="command" @volume="volume=$event" @save-volume="patchPreferences({volume:$event})" @now="navigate('now')" @queue="toggleQueue" />
-    <div class="statusbar"><span><span class="status-tick" aria-hidden="true"></span>{{ state ? '本机资料已就绪' : '正在连接本机资料' }}<span v-if="state?.app.testProfile" class="test-label">布局测试资料</span></span><span class="status-meta">{{ state?.effectiveTheme === 'day' ? 'DAY / 白天' : 'NIGHT / 黑夜' }}<span class="status-separator" aria-hidden="true">/</span>开发版</span></div>
+    <div class="statusbar"><span><span class="status-tick" aria-hidden="true"></span>{{ state ? '本机资料已就绪' : '正在连接本机资料' }}<span v-if="state?.app.testProfile" class="test-label">布局测试资料</span></span><span class="status-meta">{{ state?.effectiveTheme === 'day' ? 'DAY / 白天' : 'NIGHT / 黑夜' }}<span class="status-separator" aria-hidden="true">/</span>{{ distributionLabel }}</span></div>
     <dialog ref="noticesDialog" class="notices-dialog" aria-labelledby="notices-title"><header><div><p class="eyebrow">OPEN SOURCE</p><h2 id="notices-title">开源许可</h2></div><button class="icon-button" autofocus aria-label="关闭开源许可" @click="noticesDialog?.close()"><Icon name="close" /></button></header><pre>{{ notices }}</pre></dialog>
   </div>
 </template>

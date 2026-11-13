@@ -5,6 +5,7 @@ release/
 # Local test cases, fixtures, regression and diagnostic scripts.
 /tests/
 # Disposable test, tool and historical verification profiles.
+/.tmp/
 .v0/
 .p0/
 .p1/

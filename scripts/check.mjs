@@ -3,12 +3,12 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 import {spawnSync} from 'node:child_process';
-const root=fileURLToPath(new URL('../',import.meta.url)),require=createRequire(import.meta.url),output=path.join(root,'.p4/checks');
+const root=fileURLToPath(new URL('../',import.meta.url)),require=createRequire(import.meta.url),output=path.join(root,'.tmp/checks');
 fs.mkdirSync(output,{recursive:true});
 const packageFile=require.resolve('electron-vite/package.json'),vite=JSON.parse(fs.readFileSync(packageFile,'utf8'));
 const testDirectory=path.join(root,'tests');
-const testFiles=fs.existsSync(testDirectory)?fs.readdirSync(testDirectory).filter(name=>name.endsWith('.test.ts')).sort().map(name=>path.join(testDirectory,name)):[];
-const steps=[...(testFiles.length?[['tests',['--test','--test-reporter=tap',...testFiles]]]:[]),['main-types',[require.resolve('typescript/bin/tsc'),'--noEmit','-p','tsconfig.node.json']],['vue-types',[require.resolve('vue-tsc/bin/vue-tsc.js'),'--noEmit','-p','tsconfig.web.json']],['build',[path.resolve(path.dirname(packageFile),typeof vite.bin==='string'?vite.bin:vite.bin['electron-vite']),'build']]];
+const testFiles=fs.existsSync(testDirectory)?fs.readdirSync(testDirectory).filter(name=>/\.test\.(ts|mjs)$/.test(name)).sort().map(name=>path.join(testDirectory,name)):[];
+const steps=[...(testFiles.length?[['tests',[path.join(root,'scripts/test.mjs')]]]:[]),['main-types',[require.resolve('typescript/bin/tsc'),'--noEmit','-p','tsconfig.node.json']],['vue-types',[require.resolve('vue-tsc/bin/vue-tsc.js'),'--noEmit','-p','tsconfig.web.json']],['build',[path.resolve(path.dirname(packageFile),typeof vite.bin==='string'?vite.bin:vite.bin['electron-vite']),'build']]];
 const report={startedAt:new Date().toISOString(),node:process.version,network:'none',localTestsAvailable:testFiles.length>0,steps:[],passed:false};
 if(!testFiles.length)console.log(JSON.stringify({name:'tests',status:'skipped',reason:'tests/ is local-only and contains no unit tests; checking types and build only'}));
 for(const [name,args]of steps){
@@ -19,4 +19,4 @@ for(const [name,args]of steps){
   report.steps.push(record);console.log(JSON.stringify(record));if(result.status!==0){console.log(outputText.slice(-14000));break}
 }
 report.passed=report.steps.length===steps.length&&report.steps.every(step=>step.exitCode===0);report.completedAt=new Date().toISOString();
-fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({report:'.p4/checks/report.json',passed:report.passed}));if(!report.passed)process.exitCode=1;
+fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({report:'.tmp/checks/report.json',passed:report.passed}));if(!report.passed)process.exitCode=1;

@@ -27,7 +27,7 @@ export class P2SmokeTransport implements KugouTransport{
   }
 }
 export async function runP2Smoke(window:BrowserWindow,db:MusicDatabase,account:AccountController,vault:CredentialVault,phase:string):Promise<void>{
-  const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,packaged:app.isPackaged,network:'synthetic account transport; no external requests',schemaVersion:db.schemaVersion()}
+  const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,testProtocol:2,suite:'account',scale:1,functional:false,packaged:app.isPackaged,network:'synthetic account transport; no external requests',schemaVersion:db.schemaVersion()}
   const evaluate=<T>(code:string):Promise<T>=>window.webContents.executeJavaScript(code,true) as Promise<T>
   const wait=async(check:()=>boolean):Promise<void>=>{const end=Date.now()+10000;while(Date.now()<end){if(check())return;await delay(30)}throw new Error('P2_SMOKE_WAIT')}
   const click=async(selector:string):Promise<void>=>{await evaluate('document.querySelector('+JSON.stringify(selector)+').click()');await delay(90)}
@@ -37,6 +37,7 @@ export async function runP2Smoke(window:BrowserWindow,db:MusicDatabase,account:A
   try{
     await set({currentPage:'settings',theme:'day'})
     if(phase==='resume'){
+      assert(JSON.stringify(await vault.read()).includes('p2-isolated-synthetic-token'));report.encryptedSessionReadInNewProcess=true
       await account.restore();await wait(()=>account.snapshot().sync.phase==='completed');assert.equal(db.getCollections().length,4);assert.equal(db.getCollections().find(item=>item.name==='我喜欢')!.positionCount,103)
       report.storedSessionRestored=true;report.repeatedSyncNoDuplicates=true
     }else{
@@ -54,7 +55,6 @@ export async function runP2Smoke(window:BrowserWindow,db:MusicDatabase,account:A
       mode('full');await account.sync();assert.equal(db.getCollections().length,4);report.favoriteAddedAgain=true
       mode('full');report.sessionPreparedForResume=true
     }
-    assert.equal(await evaluate<boolean>('typeof window.require!=="undefined"||typeof window.process!=="undefined"'),false);report.rendererRestricted=true
     if(phase==='resume'){
       await account.logout();assert.equal(fs.existsSync(vault.filename),false);assert.equal(db.getCollections().length,4);report.logoutKeepsCache=true
       await capture('logged-out-cache')

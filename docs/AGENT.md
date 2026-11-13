@@ -8,10 +8,12 @@
 - V0 按当前酷狗账号核心范围接受；P0–P4 已在当前 Windows 11 x64 环境收尾。用户已人工接受正式程序的登录同步、界面、播放、版本选择、本地文件与缓存目录。
 - 清理前有 81 项测试、编译版／交付版／隔离安装版共 18 次桌面回归、441 次布局检查，以及独立 NSIS 安装和卸载证据。历史报告、临时资料和 V0 验证器按用户要求删除，不要依赖旧报告作为脚本输入。
 - 2026-11-12 整理 Git 工作区后重新完成 81 项测试、主进程／Vue 类型、构建及导入界面首次启动／重启回归。导入回归从本机 `tests/fixtures/` 的公开元数据生成模拟结果和封面，不依赖已删除的历史报告；该轮测试输出随后清理。
-- 用户最新要求：发行目录按 `package.json` 的版本号命名，当前为 `release/0.4.0-rc.1/`，其中保存安装包、`win-unpacked/Su Music.exe` 和说明。同一版本重新打包更新该目录；版本升级创建新版本目录，保留已有版本。
+- 用户最新要求：发行目录按 `package.json` 的版本号命名，当前为 `release/0.4.0-rc.1/`，其中同时保存 NSIS 安装包、Portable EXE、`win-unpacked/Su Music.exe` 和说明。同一版本重新打包更新该目录；版本升级创建新版本目录，保留已有版本。
 - 使用说明已合并至 `README.md`，源码与发行包都保留这一份说明；功能和版本变化时同步更新。
 - Git 交付源码、必要工具脚本、构建配置、许可及说明；按用户要求，`tests/` 内的测试、固定样本及回归／诊断脚本仅保存在本机，不提交 Git。依赖、缓存、编译与发行产物属于本机生成内容。
 - 开发说明与已知限制集中在 `docs/`，第三方声明与许可原文集中在 `licenses/`；根目录 `README.md` 提供入口。源码、应用内许可读取和发行包使用相同的文档路径，更新生成或打包脚本时不要恢复旧的根目录文档。
+
+- P0–P4 开发测试已按功能归并。日常入口为 `scripts/test.mjs`，执行计划与发行审计共用 `scripts/test-plan.mjs`；覆盖归属见 [TESTING.md](TESTING.md)。不要恢复阶段入口或按阶段重复跑相同断言。
 
 ## 产品约束
 
@@ -29,6 +31,8 @@
 ## 安全与运行边界
 
 - 凭据只在主进程，以 Windows `safeStorage` 加密；正常资料目录为 `%APPDATA%\Su Music\`。不要把真实会话、二维码、账号快照、缓存、音频或日志提交 Git，也不要为清理／测试删除真实用户资料。
+- electron-builder Portable 运行时使用 `PORTABLE_EXECUTABLE_DIR`／`PORTABLE_EXECUTABLE_FILE`，资料写入 EXE 旁的 `Data/`；不要使用指向临时解压目录的 `process.execPath` 计算便携资料位置。安装版仍使用 `%APPDATA%\Su Music\`。
+- 软件更新只由设置页手动触发。主进程固定访问 `ACGsu/su-music` 的 GitHub Release，按当前安装版／Portable 形态选择精确命名的资产，并在执行前核对同名 `.sha256`；渲染器不能提交 URL、文件名或命令。正式版忽略预发布，预发布版可以继续接收预发布和正式版。
 - `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`。只通过固定的 preload 接口通信；主进程核对发送 frame、受信任页面及 DTO 字段。不要引入任意 URL／路径／命令执行接口。
 - Vue 响应式对象不能直接穿过 contextBridge。播放请求使用 `validatePlayerCommand` 构造固定字段的普通对象；回归必须实际点击版本按钮，不能只直调主进程绕过界面。
 - GD 搜索、元数据补充、播放地址解析共享持久化预算 **45 次／5 分钟**。实时脚本也共用正常资料目录的 `gd-budget.sqlite`，不能另开预算规避限流。
@@ -85,46 +89,45 @@ node scripts/audit-package.mjs
 ```
 
 - `scripts/check.mjs` 执行主进程类型、Vue 类型及构建；本机存在单元测试时先运行测试，缺少测试时明确记录跳过。`pnpm test`、`pnpm typecheck`、`pnpm build` 可单独使用；显式请求测试而缺少本机资料时会报错，不会误报通过。
-- `pnpm smoke:desktop` 通过 `scripts/test.mjs --desktop` 调用 `tests/scripts/desktop-smoke.mjs`，顺序执行导入／封面、账号状态、界面播放／恢复及大曲库／三档设备比例回归。输入来自本机 `tests/fixtures/` 或生成数据，不依赖历史报告、不访问外网；Git 检出不包含这些本机资料。
-- 单组回归位于 `tests/scripts/p1-desktop-smoke.mjs` 至 `p4-desktop-smoke.mjs`，均支持 `--packaged`。P4 支持 `--scale=1`、`1.25` 或 `1.5`，默认全部三档。
-- 临时结果、测试资料及工具缓存写到 `.p0/`–`.p4/`，按需重建；这些目录可删除且被 Git 忽略。单元测试自行删除其创建的资料。
-- 打包输出 `release/<版本号>/`，electron-builder 使用 `release/${version}`，相关脚本使用 `release-paths.mjs`，升级时只需更新 `package.json` 版本号并同步说明。NSIS 面向当前用户，不自动发布。`audit-package.mjs` 比较编译产物／README、排除私人和测试文件并生成 SHA-256；`--smoke` 另外要求当前交付程序的回归结果。
-- 安装检查另运行 `node tests/scripts/build-install-test.mjs`、`& '.\tests\scripts\validate-install.ps1'`。使用随机独立 appId／GUID、经检查的 `.p4/install/installed-*` 目录，关闭快捷方式、自动运行和用户资料删除；安装后检查六次启动，卸载后核对注册项移除和测试资料保留。不要拿真实旧安装做清理测试。
+- `pnpm smoke` 与 `pnpm smoke:desktop` 共用 `tests/scripts/desktop-smoke.mjs`，默认执行导入与安全、账号、播放、布局共 10 次启动；同一命令不重复调度套件。前三组分别首次启动／恢复；布局三档缩放首次启动、仅基准档额外检查恢复。
+- `--suite=import,account,playback,layout` 选择功能，`--scale=1,1.25,1.5` 选择布局比例，`--list` 只显示计划。`--dev` 验证 Vite 开发模式的导入与安全；`--packaged` 验证重新构建的发行程序。旧程序未包含测试协议 2 时拒绝启动，不能将旧程序结果充作新测试通过。
+- 测试脚本生成的临时资料和工具缓存集中在 `.tmp/`：`tests/` 为测试资料和最新摘要，`checks/` 为类型／构建日志，`cache/` 为工具缓存，`audit/` 为审计，`manual/` 为手动验证，`install/` 为隔离安装。成功的桌面运行自动清理自身资料，失败保留；`--keep-artifacts` 保留成功资料。只清理已核实处于这些目录内的生成内容，不清理正常用户资料。
+- 打包输出 `release/<版本号>/`，electron-builder 使用 `release/${version}`，相关脚本使用 `release-paths.mjs`，升级时只需更新 `package.json` 版本号并同步说明。一次打包生成面向当前用户的 NSIS 和单文件 Portable，不自动发布。`audit-package.mjs` 比较编译产物／README、排除私人和测试文件，并为两种交付文件生成 SHA-256；GitHub Release 需要同时上传 EXE 与同名校验文件，`--smoke` 另外要求当前交付程序的回归结果。
+- 安装检查另运行 `node tests/scripts/build-install-test.mjs`、`& '.\tests\scripts\validate-install.ps1'`。使用随机独立 appId／GUID、经检查的 `.tmp/install/installed-*` 目录，关闭快捷方式、自动运行和用户资料删除；安装后检查四次启动，卸载后核对注册项移除和测试资料保留。不要拿真实旧安装做清理测试。
 - 当前开发机 Node 为 `D:\nodejs\node.exe`，pnpm 为 `D:\nodejs\node_global\pnpm.cmd`。如果 pnpm 自动检查要求重建依赖但安装条件不具备，可用 `node scripts/check.mjs` 调用现有固定依赖；不要自动清空 `node_modules`。
 - Windows 沙箱 ACL 曾阻止 Chromium 读 Electron 目录。需要正常权限时走审批，不关闭 Electron sandbox、不随意改 ACL。桌面截图用生成资料检查，物理声音与原生选择界面的实际观察由用户确认。
 
 ## 脚本职责与保留范围
 
-`scripts/` 中保留以下 8 个可随 Git 提交的通用入口，均不自动发布：
+`scripts/` 中保留以下 9 个可随 Git 提交的通用入口，均不自动发布：
 
 | 文件 | 作用 |
 | --- | --- |
 | `prepare-electron.mjs` | 下载固定版本 Electron、核对 SHA-256，再调用解压助手。 |
 | `extract-electron.ps1` | 检查路径位于工作区后解压运行时，由准备脚本调用。 |
-| `check.mjs` | 类型检查与构建，本机有单元测试时一并执行；结果写 `.p4/checks/`。 |
+| `check.mjs` | 类型检查与构建，本机有单元测试时一并执行；结果写 `.tmp/checks/`。 |
 | `test.mjs` | `pnpm test`、`pnpm smoke`、`pnpm smoke:desktop` 的统一入口；缺少本机测试资料时明确报错。 |
-| `package.mjs` | 校验构建、许可和运行时后生成 Windows x64 NSIS 安装包。 |
+| `package.mjs` | 校验构建、许可和运行时后生成 Windows x64 NSIS 安装包及 Portable EXE。 |
 | `release-paths.mjs` | 从版本号计算发行路径，供打包、审计和本机脚本共用。 |
+| `test-plan.mjs` | 共用功能执行计划及结果校验，防止遗漏、重复和旧报告被发行审计接受。 |
 | `audit-licenses.mjs` | 读取已安装依赖许可，生成 `licenses/THIRD_PARTY_NOTICES.md` 及本机审计结果。 |
 | `audit-package.mjs` | 比对 ASAR、源码文档和构建，检查排除项，整理发行说明与许可并写 SHA-256；可附加核对回归及安装证据。 |
 
-以下 13 个脚本已移至 `tests/scripts/`，仅供本机使用，不提交 Git：
+以下 9 个本机工具位于 `tests/scripts/`，不提交 Git：
 
 | 文件 | 作用 |
 | --- | --- |
-| `smoke.mjs` | 基础功能首次启动／重启回归，支持编译版与发行版。 |
-| `dev-smoke.mjs` | 启动 Vite 开发模式并执行基础回归，结束自己启动的进程。 |
-| `desktop-smoke.mjs` | 顺序调用 P1–P4 桌面回归并汇总结果。 |
-| `p1-desktop-smoke.mjs` | 用本机公开元数据生成导入／封面样本，检查首次启动与恢复。 |
-| `p2-desktop-smoke.mjs` | 模拟扫码与账号同步状态，检查首次启动与恢复。 |
-| `p3-desktop-smoke.mjs` | 用生成音频检查播放、版本选择、队列、本地文件及缓存恢复。 |
-| `p4-desktop-smoke.mjs` | 大曲库、界面布局及三档设备比例回归，也可检查隔离安装程序。 |
+| `desktop-smoke.mjs` | 统一调度导入与安全、账号、播放和布局；支持编译、开发、发行及隔离安装模式。 |
+| `import-fixture.mjs` | 从两个固定公开样本生成导入测试输入和封面。 |
+| `test-workspace.mjs` | 核对路径后清理本轮生成的测试资料。 |
 | `build-install-test.mjs` | 创建独立应用标识和无快捷方式的安装测试包。 |
-| `validate-install.ps1` | 安装隔离测试包、运行桌面回归、卸载并核对测试资料保留。 |
-| `p2-live.mjs` | 打开隔离资料目录供人工真实扫码，记录同步状态。 |
-| `p3-real-audio.mjs` | 真实播放一首公开 Carefree，使用共享 GD 请求预算。 |
-| `p3-cache-probe.mjs` | 下载同一公开样本，检查完整缓存与取消读取边界；不证明整曲播放。 |
-| `diagnose-playback.mjs` | 只读正常资料目录中的近期播放问题、日志与预算，输出本机诊断记录。 |
+| `validate-install.ps1` | 安装隔离包、执行布局首次启动／恢复检查、卸载并核对注册项和测试资料。 |
+| `p2-live.mjs` | 在隔离资料下手动验证真实扫码。 |
+| `p3-real-audio.mjs` | 验证一首公开 Carefree 的真实完整播放，使用共享请求预算。 |
+| `p3-cache-probe.mjs` | 验证真实下载完成与取消读取的缓存边界。 |
+| `diagnose-playback.mjs` | 只读汇总本机播放错误和请求额度。 |
+
+源程序中的 `import-smoke.ts`、`account-smoke.ts`、`playback-smoke.ts`、`layout-smoke.ts` 是相应桌面检查实现；公共桥接与协议检查由 `desktop-security.ts` 负责，只在导入首次启动时运行。现有内部启动参数及模拟数据标识兼容保留，不代表独立阶段测试。
 
 ## 真实验证与已知边界
 
@@ -134,4 +137,4 @@ node scripts/audit-package.mjs
 
 Windows 10、其他机器、ARM64、跨显示器移动和正式旧安装覆盖未实测。100%／125%／150% 检查采用 Chromium 设备比例，未改变系统全局设置。普通他人收藏歌单子类型、服务端二维码自然过期及长期会话仍有边界。用户免除两处 hash 变化原因复测，不恢复旧二维码老化脚本。
 
-QQ／网易云账号、云端编辑、歌词同步、批量下载、多设备同步和自动更新不属于当前功能。完整限制见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。许可见 [第三方声明](../licenses/THIRD_PARTY_NOTICES.md)、`licenses/` 及 QR 来源记录；GD 服务出处与非商业使用条件必须保留。
+QQ／网易云账号登录、云端编辑、歌词同步、批量下载和多设备同步不属于当前功能。更新仅由用户手动检查 GitHub Release，并在明确点击后下载和应用。完整限制见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。许可见 [第三方声明](../licenses/THIRD_PARTY_NOTICES.md)、`licenses/` 及 QR 来源记录；GD 服务出处与非商业使用条件必须保留。

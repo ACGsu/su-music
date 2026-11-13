@@ -8,7 +8,6 @@ import { LocalLog } from './logging.ts'
 import { APP_URL, DEVELOPMENT_URL, PRODUCTION_CSP, assetPath, isTrustedPage, safeCode } from './security.ts'
 import { CHANNELS } from '../shared/contracts.ts'
 import type { AppState, Result } from '../shared/contracts.ts'
-import { runSmoke, seedSmokeData } from './smoke.ts'
 import { GdRequestBudget } from './music/budget.ts'
 import { GdNeteaseAdapter } from './music/gd.ts'
 import { MusicSourceService } from './music/service.ts'
@@ -16,11 +15,11 @@ import { sourceMessage } from './music/errors.ts'
 import { validateCandidateId, validateQuery, validateTrackReference } from '../shared/music.ts'
 import { PublicHttpClient } from './music/http.ts'
 import { KugouShareImporter } from './music/share.ts'
-import { p1MockHttp, runP1Smoke } from './p1-smoke.ts'
+import { p1MockHttp, runP1Smoke } from './import-smoke.ts'
 import { CollectionCoverCache } from './music/covers.ts'
 import { AccountController, accountMessage } from './account/controller.ts'
 import { KugouHttpTransport } from './account/protocol.ts'
-import {P2SmokeTransport,runP2Smoke} from './p2-smoke.ts'
+import {P2SmokeTransport,runP2Smoke} from './account-smoke.ts'
 import {recordP2State} from './p2-observer.ts'
 import {SongCache} from './player/cache.ts'
 import {MediaRegistry} from './player/media.ts'
@@ -30,33 +29,44 @@ import {PlayerError,playerMessage} from './player/errors.ts'
 import {registerLocalFile} from './player/local.ts'
 import {validateMediaEvent,validatePlayerCommand} from '../shared/playback.ts'
 import type {PlaybackLibrary} from '../shared/playback.ts'
-import {p3MockAudio,p3MockHttp,runP3Smoke,seedP3Smoke} from './p3-smoke.ts'
+import {p3MockAudio,p3MockHttp,runP3Smoke,seedP3Smoke} from './playback-smoke.ts'
 import {realAudioFetch,runRealAudio,seedRealControl} from './p3-real-audio.ts'
-import {p4MockFetch,p4MockHttp,P4Transport,runP4Smoke,seedP4Smoke} from './p4-smoke.ts'
+import {p4MockFetch,p4MockHttp,P4Transport,runP4Smoke,seedP4Smoke} from './layout-smoke.ts'
+import { UpdateError, UpdateService, updateMessage, type Distribution } from './update.ts'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'su-music', privileges: { standard: true, secure: true, supportFetchAPI: true, stream:true } }])
 app.setName('Su Music')
-const p1Smoke = process.argv.includes('--p1-smoke')
+const normalUserData=app.getPath('userData')
+const portableDirectoryValue=process.env.PORTABLE_EXECUTABLE_DIR,portableFileValue=process.env.PORTABLE_EXECUTABLE_FILE
+const portableDirectoryCandidate=portableDirectoryValue&&path.isAbsolute(portableDirectoryValue)?path.resolve(portableDirectoryValue):null
+const portableFileCandidate=portableFileValue&&path.isAbsolute(portableFileValue)&&/\.exe$/i.test(portableFileValue)?path.resolve(portableFileValue):null
+const portableDirectory=app.isPackaged&&process.platform==='win32'&&portableDirectoryCandidate&&portableFileCandidate&&
+  path.dirname(portableFileCandidate).toLocaleLowerCase()===portableDirectoryCandidate.toLocaleLowerCase()?portableDirectoryCandidate:null
+const portableExecutable=portableDirectory?portableFileCandidate:null
+const distribution:Distribution=!app.isPackaged?'development':portableDirectory?'portable':'installed'
+const p1Smoke = process.argv.includes('--p1-smoke') || process.env.SU_MUSIC_TEST_SUITE==='import'
 const p3Smoke=process.argv.includes('--p3-smoke')
 const p4Smoke=process.argv.includes('--p4-smoke')
 const p4Scale=Number(process.argv.find(value=>value.startsWith('--force-device-scale-factor='))?.split('=')[1]??1)
 if(p4Smoke&&![1,1.25,1.5].includes(p4Scale))throw new Error('P4_SCALE_INVALID')
-const p3RealAudio=process.argv.includes('--p3-real-audio'),normalUserData=app.getPath('userData')
+const p3RealAudio=process.argv.includes('--p3-real-audio')
 const p2Smoke=process.argv.includes('--p2-smoke'),p2Live=process.argv.includes('--p2-live')
-const smoke = p4Smoke || p3RealAudio || p3Smoke || p2Smoke || p1Smoke || process.argv.includes('--p0-smoke') || Boolean(process.env.SU_MUSIC_SMOKE_ROOT)
+if(process.argv.includes('--p0-smoke')||(process.env.SU_MUSIC_SMOKE_ROOT&&!p1Smoke))throw new Error('USE_UNIFIED_DESKTOP_RUNNER')
+const smoke = p4Smoke || p3RealAudio || p3Smoke || p2Smoke || p1Smoke
+if(portableDirectory&&!smoke&&!p2Live){const data=path.join(portableDirectory,'Data');fs.mkdirSync(data,{recursive:true});app.setPath('userData',data);app.setPath('sessionData',data)}
 let p2Root:string|null=null
 const phase = process.argv.find(value => value.startsWith('--smoke-phase='))?.slice(14) ?? process.env.SU_MUSIC_SMOKE_PHASE ?? 'first'
 if (smoke) {
   const argument = process.argv.find(value => value.startsWith('--smoke-root='))?.slice(13) ?? process.env.SU_MUSIC_SMOKE_ROOT
   if (!argument) throw new Error('SMOKE_ROOT_REQUIRED')
-  const root = path.resolve(argument), allowed = path.resolve(process.cwd(), p4Smoke?'.p4':p3Smoke||p3RealAudio?'.p3':p2Smoke?'.p2':p1Smoke ? '.p1' : '.p0')
+  const root = path.resolve(argument), allowed = path.resolve(process.cwd(), p3RealAudio?'.tmp/manual/real-audio':'.tmp/tests')
   if (!root.startsWith(allowed + path.sep)) throw new Error('SMOKE_ROOT_OUTSIDE_WORKSPACE')
   if (!fs.realpathSync(root).startsWith(fs.realpathSync(allowed) + path.sep)) throw new Error('SMOKE_ROOT_OUTSIDE_WORKSPACE')
   const data = path.join(root, 'user-data'); fs.mkdirSync(data, { recursive: true }); app.setPath('userData', data); app.setPath('sessionData', data)
 }
 if(p2Live){
   const value=process.argv.find(value=>value.startsWith('--p2-root='))?.slice(10);if(!value)throw new Error('P2_PROFILE_REQUIRED')
-  const root=path.resolve(value),allowed=path.resolve(process.cwd(),'.p2');fs.mkdirSync(root,{recursive:true})
+  const root=path.resolve(value),allowed=path.resolve(process.cwd(),'.tmp/manual/login');fs.mkdirSync(root,{recursive:true})
   if(!root.startsWith(allowed+path.sep)||!fs.realpathSync(root).startsWith(fs.realpathSync(allowed)+path.sep))throw new Error('P2_PROFILE_OUTSIDE_WORKSPACE')
   p2Root=root;fs.mkdirSync(path.join(root,'user-data'),{recursive:true});app.setPath('userData',path.join(root,'user-data'));app.setPath('sessionData',path.join(root,'user-data'))
 }
@@ -70,6 +80,7 @@ let covers: CollectionCoverCache | null = null
 let account: AccountController | null = null
 let audioCache:SongCache|null=null,mediaRegistry:MediaRegistry|null=null,playbackSources:PlaybackSources|null=null,player:PlayerController|null=null
 let coverRefresh:Promise<void>|null=null,lastCoverSync:string|null=null
+let updater:UpdateService|null=null
 let expectedURL = APP_URL
 const singleInstance=smoke||p2Live||app.requestSingleInstanceLock()
 if(!singleInstance)app.quit()
@@ -78,7 +89,7 @@ function currentState(): AppState {
   if (!database || !vault) throw new Error('APPLICATION_NOT_READY')
   const preferences = database.getPreferences(), collections = database.getCollections().map(item=>({...item,coverUrl:covers?.url(item.id)??null}))
   return {
-    app: { name: 'Su Music', version: app.getVersion(), packaged: app.isPackaged, testProfile: smoke },
+    app: { name: 'Su Music', version: app.getVersion(), packaged: app.isPackaged, testProfile: smoke, distribution },
     preferences, effectiveTheme: preferences.theme === 'system' ? nativeTheme.shouldUseDarkColors ? 'night' : 'day' : preferences.theme,
     library: { collections, positionCount: collections.filter(row => row.kind !== 'shared').reduce((sum, row) => sum + row.positionCount, 0) },
     security: { credentialProtectionAvailable: vault.available() },
@@ -116,7 +127,7 @@ function registerIPC(target: BrowserWindow): void {
       return { ok: false, error: { code: 'IPC_SENDER_DENIED', message: '此请求无法执行。' } }
     }
     try { return { ok: true, value: await handler(...args) } }
-    catch (error) { log?.event('error', { code: safeCode(error) }); return { ok: false, error: { code: safeCode(error), message: error instanceof PlayerError?playerMessage(error):accountMessage(error)??sourceMessage(error) } } }
+    catch (error) { log?.event('error', { code: safeCode(error) }); return { ok: false, error: { code: safeCode(error), message: error instanceof UpdateError?updateMessage(error):error instanceof PlayerError?playerMessage(error):accountMessage(error)??sourceMessage(error) } } }
   }
   const force = (args: unknown[]): boolean => {
     if (args.length < 1 || args.length > 2 || args[1] !== undefined && typeof args[1] !== 'boolean') throw new Error('INVALID_REQUEST')
@@ -167,7 +178,9 @@ function registerIPC(target: BrowserWindow): void {
       try{return audioCache!.choose(result.filePaths[0])}catch{throw new PlayerError('CACHE_DIRECTORY_UNWRITABLE')}
     },
     [CHANNELS.resetCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');try{return audioCache!.reset()}catch{throw new PlayerError('CACHE_DIRECTORY_UNWRITABLE')}},
-    [CHANNELS.clearCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return audioCache!.clear(mediaRegistry!.protectedFiles())}
+    [CHANNELS.clearCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return audioCache!.clear(mediaRegistry!.protectedFiles())},
+    [CHANNELS.checkUpdate]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return updater!.check()},
+    [CHANNELS.applyUpdate]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');const result=await updater!.stageAndLaunch();setTimeout(()=>app.quit(),250);return result}
   }
   for (const [channel, handler] of Object.entries(handlers)) { ipcMain.removeHandler(channel); ipcMain.handle(channel, protect(handler)) }
 }
@@ -198,12 +211,13 @@ async function createWindow(): Promise<void> {
   else await target.loadURL(APP_URL)
   if (smoke) {
     target.showInactive()
-    try { if(p4Smoke)await runP4Smoke(target,database!,player!,phase,p4Scale);else if(p3RealAudio)await runRealAudio(target,database!,player!,audioCache!,mediaRegistry!);else if(p3Smoke)await runP3Smoke(target,database!,player!,audioCache!,mediaRegistry!,phase);else if(p2Smoke)await runP2Smoke(target,database!,account!,vault!,phase);else if (p1Smoke) await runP1Smoke(target,database!,phase); else await runSmoke(target, database!, vault!, { phase, state: currentState, packaged: app.isPackaged }); target.close() }
+    try { if(p4Smoke)await runP4Smoke(target,database!,player!,phase,p4Scale);else if(p3RealAudio)await runRealAudio(target,database!,player!,audioCache!,mediaRegistry!);else if(p3Smoke)await runP3Smoke(target,database!,player!,audioCache!,mediaRegistry!,phase);else if(p2Smoke)await runP2Smoke(target,database!,account!,vault!,phase);else if (p1Smoke) await runP1Smoke(target,database!,phase); target.close() }
     catch (error) { console.error(JSON.stringify({ smokePassed: false, code: safeCode(error) })); app.exit(1) }
   } else target.show()
 }
 app.whenReady().then(async () => {
   if(!singleInstance)return
+  updater=new UpdateService({currentVersion:app.getVersion(),distribution,userData:app.getPath('userData'),executable:process.execPath,portableExecutable,fetcher:(input,init)=>net.fetch(input,init)})
   log = new LocalLog(path.join(app.getPath('userData'), 'logs'))
   database = new MusicDatabase(path.join(app.getPath('userData'), 'library.sqlite'))
   budget = new GdRequestBudget(path.join(p3RealAudio?normalUserData:app.getPath('userData'), 'gd-budget.sqlite'))
@@ -226,7 +240,6 @@ app.whenReady().then(async () => {
     const scale = Math.min(1, 500 / size.width, 500 / size.height)
     return image.resize({width:Math.max(1,Math.round(size.width*scale)),height:Math.max(1,Math.round(size.height*scale)),quality:'good'}).toJPEG(85)
   },http)
-  if (smoke && !p1Smoke && !p2Smoke && !p4Smoke && phase === 'first') seedSmokeData(database)
   const protectionAvailable = await safeStorage.isAsyncEncryptionAvailable()
   vault = new CredentialVault(path.join(app.getPath('userData'), 'private'), {
     available: () => protectionAvailable,

@@ -72,7 +72,7 @@ export function seedP3Smoke(db:MusicDatabase,phase:string):void{
   }
 }
 export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:PlayerController,cache:SongCache,media:MediaRegistry,phase:string):Promise<void>{
-  const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,packaged:app.isPackaged,network:'mocked GD and audio responses; no external calls',actualDecoder:'Chromium HTMLAudioElement; generated WAV PCM16/48kHz',audioOutputMuted:true,nativeDialogSimulated:true,schemaVersion:db.schemaVersion()}
+  const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,testProtocol:2,suite:'playback',scale:1,functional:false,packaged:app.isPackaged,network:'mocked GD and audio responses; no external calls',actualDecoder:'Chromium HTMLAudioElement; generated WAV PCM16/48kHz',audioOutputMuted:true,nativeDialogSimulated:true,schemaVersion:db.schemaVersion()}
   const originalDialog=dialog.showOpenDialog
   dialog.showOpenDialog=(async(...args:unknown[])=>{const options=args.at(-1) as {properties?:string[]};return{canceled:false,filePaths:[options.properties?.includes('openDirectory')?path.join(root,'chosen-cache'):path.join(root,'fixtures','local.wav')]}}) as typeof dialog.showOpenDialog
   const evaluate=<T>(code:string):Promise<T>=>window.webContents.executeJavaScript(code,true) as Promise<T>
@@ -97,11 +97,6 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
   }
   try{
     await wait(()=>Boolean(window.webContents.mainFrame));await set({currentPage:'settings',volume:0,theme:'day'})
-    assert.equal(await evaluate<boolean>('typeof window.require!=="undefined"||typeof window.process!=="undefined"'),false)
-    assert.equal((await evaluate<{ok:boolean}>('window.suMusic.playerCommand({type:"play",target:{kind:"file",filename:"C:/private"}})')).ok,false)
-    assert.equal((await evaluate<{ok:boolean}>('window.suMusic.chooseCacheDirectory("C:/arbitrary")')).ok,true)
-    // A JavaScript caller cannot pass a path: the preload forwards no such argument.
-    report.noRendererPathsAccepted=true
     if(phase==='resume'){
       assert.equal(cache.snapshot().usingDefault,false);assert.equal(db.getBinding({collectionId:'p3-library',position:1})!.slot,'alternative');assert.equal(player.snapshot().mode,'shuffle');assert(db.getHistory().some(item=>item.now.binding==='alternative'))
       await set({currentPage:'library'});await click('[data-shared-item]');await waitUI('Boolean(document.querySelector("[data-row-play=\\"1\\"]"))');assert.equal(db.getCollection('p3-library')!.tracks[0]!.title,B.title);report.selectedDisplayAndActionsRestored=true
@@ -109,6 +104,8 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
       await command({type:'play',target:{kind:'original',reference:{collectionId:'p3-library',position:1}}});await wait(()=>player.snapshot().phase==='playing');assert.equal(player.snapshot().now!.candidate!.trackId,'1002');assert.equal(player.snapshot().now!.binding,'alternative');report.rememberedActualVersionDecoded=true
       await command({type:'control',action:'pause'});await capture('resume-alternative');report.passed=true;return
     }
+    assert.equal((await evaluate<{ok:boolean}>('window.suMusic.chooseCacheDirectory("C:/arbitrary")')).ok,true)
+    assert.equal(cache.snapshot().directory,path.join(root,'chosen-cache','Su Music Cache'));report.noRendererPathsAccepted=true
     await click('[data-cache-choose]');assert.equal(cache.snapshot().directory,path.join(root,'chosen-cache','Su Music Cache'));await evaluate('document.querySelector(".cache-settings").scrollIntoView({block:"start"})');await capture('day-cache-settings');report.selectedCacheDirectoryViaBridge=true
     await set({currentPage:'library'});await click('[data-shared-item]')
     assert.equal(await evaluate<boolean>('Array.from(document.querySelectorAll(".track-name")).every(element=>!element.textContent.includes(".mp3"))'),true);report.importedSuffixNotDisplayed=true

@@ -1,3 +1,4 @@
+import { verifyDesktopSecurity } from './desktop-security.ts'
 import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
@@ -42,7 +43,7 @@ function seedObservedCache(db: MusicDatabase, root: string): void {
 }
 export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase: string): Promise<void> {
   const root = path.dirname(app.getPath('userData')),{playlist}=fixtures(root)
-  const report: Record<string,unknown> = { at:new Date().toISOString(),phase,packaged:app.isPackaged,
+  const report: Record<string,unknown> = { at:new Date().toISOString(),phase,testProtocol:2,suite:'import',scale:1,functional:false,packaged:app.isPackaged,
     networkMode:'fixed public metadata + synthetic cover/resource caches and share response; no external requests',
     syntheticCredentialsUsed:false,fullPlaybackClaimed:false,schemaVersion:db.schemaVersion() }
   const evaluate = <T>(script: string): Promise<T> => window.webContents.executeJavaScript(script,true) as Promise<T>
@@ -60,15 +61,11 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
   }
   try {
     await wait('document.body.dataset.ready === "true"')
-    const surface=await evaluate<{node:boolean;methods:string[]}>('({node:typeof window.require!=="undefined"||typeof window.process!=="undefined",methods:Object.keys(window.suMusic)})')
-    assert.equal(surface.node,false);assert.deepEqual(surface.methods.sort(),['getState','setPreferences','getCollection','getNotices','onStateChanged','importShare','searchOnline','searchLibrary','matchTrack','checkResource','startLogin','cancelLogin','logout','syncAccount','cancelSync','setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','importLocal','removeLocal','clearHistory','playHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','onPlayerChanged'].sort())
-    report.restrictedBridgeVerified=true
-    assert.equal((await evaluate<{ok:boolean}>('window.suMusic.matchTrack({collectionId:"one",position:1,token:"extra"})')).ok,false)
-    assert.equal((await evaluate<{ok:boolean}>('window.suMusic.checkResource({providerId:"gd",sourceId:"kugou",trackId:"100"})')).ok,false)
-    report.asyncInvalidRequestsRejected=true
+    if (phase === 'first') { await verifyDesktopSecurity(window,root);report.desktopSecurityVerified=true }
     if (phase === 'resume') {
       assert.equal(db.getCollections().filter(item=>item.kind==='shared').length,1)
       assert.equal(db.getCollection(db.getCollections()[0]!.id)!.tracks.length,22)
+      assert.equal(db.getPreferences().volume,87)
       assert.equal(db.getPreferences().theme,'night')
       assert.equal(db.getPreferences().density,'compact')
       assert.equal(db.getPreferences().libraryView,'list')
@@ -157,6 +154,11 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
     window.setSize(960,640);await delay(200);await capture('minimum-version-panel')
     assert.equal(await evaluate<boolean>('document.documentElement.scrollWidth>innerWidth||document.querySelector(".content").scrollWidth>document.querySelector(".content").clientWidth'),false)
     report.minimumWindowNoOuterOverflow=true
+    await set({currentPage:'settings'})
+    await click('[data-theme-choice="night"]');await click('[data-density="compact"]')
+    await evaluate('(()=>{const input=document.querySelector("[data-volume]");input.value="87";input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}));})()')
+    await wait('document.querySelector("[data-volume]").value==="87"')
+    assert.equal(db.getPreferences().volume,87);report.preferenceControlsVerified=true
     await set({theme:'night',density:'compact',libraryView:'list',currentPage:'settings'})
     report.passed=true
   } catch(error) { report.passed=false;report.error=error instanceof Error?error.message:'P1_SMOKE_FAILED';throw error }
