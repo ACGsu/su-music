@@ -12,7 +12,7 @@ import { GdRequestBudget } from './music/budget.ts'
 import { GdNeteaseAdapter } from './music/gd.ts'
 import { MusicSourceService } from './music/service.ts'
 import { sourceMessage } from './music/errors.ts'
-import { validateCandidateId, validateQuery, validateTrackReference } from '../shared/music.ts'
+import { validateCandidateId, validateOnlineSearchRequest, validateQuery, validateTrackReference } from '../shared/music.ts'
 import { PublicHttpClient } from './music/http.ts'
 import { KugouShareImporter } from './music/share.ts'
 import { p1MockHttp, runP1Smoke } from './import-smoke.ts'
@@ -79,7 +79,7 @@ let music: MusicSourceService | null = null
 let covers: CollectionCoverCache | null = null
 let account: AccountController | null = null
 let audioCache:SongCache|null=null,mediaRegistry:MediaRegistry|null=null,playbackSources:PlaybackSources|null=null,player:PlayerController|null=null
-let coverRefresh:Promise<void>|null=null,lastCoverSync:string|null=null
+let coverRefresh:Promise<void>|null=null,lastCoverSync:string|null=null,lastNeteaseCoverSync:string|null=null
 let updater:UpdateService|null=null
 let expectedURL = APP_URL
 const singleInstance=smoke||p2Live||app.requestSingleInstanceLock()
@@ -107,10 +107,24 @@ function updateTheme(): void {
   window.webContents.send(CHANNELS.changed, state)
   if(p2Root&&database)try{recordP2State(p2Root,state,database)}catch{}
   if(!smoke&&state.account?.sync.phase==='completed'&&state.account.sync.lastSuccessAt!==lastCoverSync){lastCoverSync=state.account.sync.lastSuccessAt;refreshCoverCache()}
+  if(!smoke&&state.account?.netease.sync.phase==='completed'&&state.account.netease.sync.lastSuccessAt!==lastNeteaseCoverSync){lastNeteaseCoverSync=state.account.netease.sync.lastSuccessAt;refreshCoverCache()}
 }
-function refreshCoverCache():void{
-  if(coverRefresh||!database||!covers)return
-  coverRefresh=(async()=>{for(const collection of database!.getCollections()){if(!database||!covers)return;await covers.refresh(collection.id);updateTheme()}})().catch(()=>{}).finally(()=>{coverRefresh=null})
+function refreshCoverCache(): void {
+  if (coverRefresh || !database || !covers) return
+  coverRefresh = (async () => {
+    try {
+      const ids = database!.getAllCollectionIds()
+      for (const id of ids) {
+        if (!database || !covers) return
+        const had = covers.url(id)
+        await covers.refresh(id)
+        if (!had && covers.url(id)) updateTheme()
+      }
+    } finally {
+      coverRefresh = null
+      updateTheme()
+    }
+  })()
 }
 function syncNativeTheme(): void {
   const preference = database!.getPreferences().theme
@@ -136,7 +150,18 @@ function registerIPC(target: BrowserWindow): void {
   const handlers = {
     [CHANNELS.state]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return currentState() },
     [CHANNELS.preferences]: (...args: unknown[]) => { if (args.length !== 1) throw new Error('INVALID_REQUEST'); database!.setPreferences(args[0]); updateTheme(); log?.event('preferences_saved', { theme: database!.getPreferences().theme }); return currentState() },
-    [CHANNELS.collection]: (...args: unknown[]) => { if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 128) throw new Error('INVALID_REQUEST'); const result=database!.getCollection(args[0]);if(result){database!.markOpened(result.collection.id);updateTheme()}return result?{...result,collection:{...result.collection,coverUrl:covers?.url(result.collection.id)??null}}:null },
+    [CHANNELS.collection]: (...args: unknown[]) => {
+      if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 128) throw new Error('INVALID_REQUEST')
+      const result = database!.getCollection(args[0])
+      if (result) {
+        database!.markOpened(result.collection.id)
+        if (covers && !covers.url(result.collection.id)) {
+          void covers.refresh(result.collection.id).then(() => updateTheme())
+        }
+        updateTheme()
+      }
+      return result ? { ...result, collection: { ...result.collection, coverUrl: covers?.url(result.collection.id) ?? null } } : null
+    },
     [CHANNELS.notices]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return fs.readFileSync(path.join(app.getAppPath(), 'licenses', 'THIRD_PARTY_NOTICES.md'), 'utf8') },
     [CHANNELS.importShare]: async (...args: unknown[]) => {
       if (args.length !== 2 || typeof args[0] !== 'string' || typeof args[1] !== 'string') throw new Error('INVALID_REQUEST')
@@ -144,8 +169,13 @@ function registerIPC(target: BrowserWindow): void {
       if(imported)await covers!.refresh(imported.collection.id)
       updateTheme();return imported?{...imported,collection:{...imported.collection,coverUrl:covers?.url(imported.collection.id)??null}}:imported
     },
-    [CHANNELS.onlineSearch]: (...args: unknown[]) => { const refresh = force(args); return music!.search(validateQuery(args[0]), refresh) },
-    [CHANNELS.librarySearch]: (...args: unknown[]) => { if (args.length !== 1) throw new Error('INVALID_REQUEST'); return music!.searchLibrary(validateQuery(args[0])) },
+    [CHANNELS.onlineSearch]: (...args: unknown[]) => {
+      if (typeof args[0] === 'object' && args[0] !== null) {
+        return music!.search(validateOnlineSearchRequest(args[0]))
+      }
+      const refresh = force(args)
+      return music!.search(validateQuery(args[0]), refresh)
+    },
     [CHANNELS.matchTrack]: (...args: unknown[]) => { const refresh = force(args); return music!.match(validateTrackReference(args[0]), refresh) },
     [CHANNELS.checkResource]: (...args: unknown[]) => { const refresh = force(args); return music!.checkResource(validateCandidateId(args[0]), refresh) },
     [CHANNELS.login]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');await account!.startLogin();return currentState()},
@@ -153,6 +183,15 @@ function registerIPC(target: BrowserWindow): void {
     [CHANNELS.logout]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');await account!.logout();return currentState()},
     [CHANNELS.sync]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');void account!.sync().catch(()=>{});return currentState()},
     [CHANNELS.cancelSync]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');account!.cancelSync();return currentState()},
+    [CHANNELS.neteaseConnect]: async (...args: unknown[]) => { if (args.length !== 1 || typeof args[0] !== 'string') throw new Error('INVALID_REQUEST'); await account!.connectNetease(args[0]); return currentState() },
+    [CHANNELS.neteaseRefresh]: async (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); await account!.refreshNetease(); return currentState() },
+    [CHANNELS.neteaseCancel]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); account!.cancelNeteaseSync(); return currentState() },
+    [CHANNELS.neteaseLogout]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); account!.logoutNetease(); return currentState() },
+    [CHANNELS.switchAccount]: (...args: unknown[]) => { if (args.length !== 1 || (args[0] !== 'kugou' && args[0] !== 'netease')) throw new Error('INVALID_REQUEST'); account!.switchAccount(args[0]); return currentState() },
+    [CHANNELS.searchHistory]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return database!.getSearchHistory() },
+    [CHANNELS.addSearchHistory]: (...args: unknown[]) => { if (args.length !== 1 || typeof args[0] !== 'string') throw new Error('INVALID_REQUEST'); return database!.addSearchHistory(args[0]) },
+    [CHANNELS.removeSearchHistory]: (...args: unknown[]) => { if (args.length !== 1 || typeof args[0] !== 'string') throw new Error('INVALID_REQUEST'); return database!.removeSearchHistory(args[0]) },
+    [CHANNELS.clearSearchHistory]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return database!.clearSearchHistory() },
     [CHANNELS.pin]:(...args:unknown[])=>{if(args.length!==2||typeof args[0]!=='string'||args[0].length>128||typeof args[1]!=='boolean')throw new Error('INVALID_REQUEST');database!.setPinned(args[0],args[1]);updateTheme();return currentState()},
     [CHANNELS.player]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return player!.snapshot()},
     [CHANNELS.playerCommand]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');return player!.command(validatePlayerCommand(args[0]))},
@@ -246,7 +285,7 @@ app.whenReady().then(async () => {
     encrypt: value => safeStorage.encryptStringAsync(value),
     decrypt: async value => { const decoded = await safeStorage.decryptStringAsync(value); return { value: decoded.result, reencrypt: decoded.shouldReEncrypt } }
   })
-  account=new AccountController(database,vault,p4Smoke?new P4Transport(smokeRoot):p2Smoke?new P2SmokeTransport(smokeRoot):new KugouHttpTransport(),updateTheme,p2Smoke?{firstPollMs:30,pollMs:100}:undefined)
+  account=new AccountController(database,vault,p4Smoke?new P4Transport(smokeRoot):p2Smoke?new P2SmokeTransport(smokeRoot):new KugouHttpTransport(),updateTheme,p2Smoke?{firstPollMs:30,pollMs:100}:undefined,adapter)
   if(p2Live)database.setPreferences({currentPage:'settings'})
   log.event('startup', { schemaVersion: database.schemaVersion(), protectionAvailable })
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))

@@ -9,7 +9,14 @@ export async function verifyDesktopSecurity(window: BrowserWindow, root: string)
   const evaluate = <T>(code: string): Promise<T> => window.webContents.executeJavaScript(code, true) as Promise<T>
   const bridge = await evaluate<{ node: boolean; methods: string[]; frozen: boolean }>('({node:typeof window.require!=="undefined"||typeof window.process!=="undefined",methods:Object.keys(window.suMusic),frozen:Object.isFrozen(window.suMusic)})')
   assert.equal(bridge.node, false); assert.equal(bridge.frozen, true)
-  assert.deepEqual(bridge.methods.sort(), ['getCollection','getNotices','getState','onStateChanged','setPreferences','importShare','searchOnline','searchLibrary','matchTrack','checkResource','startLogin','cancelLogin','logout','syncAccount','cancelSync','setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','importLocal','removeLocal','clearHistory','playHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','checkUpdate','applyUpdate','onPlayerChanged'].sort())
+  assert.deepEqual(bridge.methods.sort(), [
+    'getCollection','getNotices','getState','onStateChanged','setPreferences','importShare','searchOnline',
+    'matchTrack','checkResource','startLogin','cancelLogin','logout','syncAccount','cancelSync',
+    'connectNetease','refreshNetease','cancelNeteaseSync','logoutNetease','switchAccount',
+    'getSearchHistory','addSearchHistory','removeSearchHistory','clearSearchHistory',
+    'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','importLocal','removeLocal',
+    'clearHistory','playHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','checkUpdate','applyUpdate','onPlayerChanged'
+  ].sort())
   for (const command of [
     'window.suMusic.setPreferences({filename:"C:/outside-workspace",token:"synthetic"})',
     'window.suMusic.matchTrack({collectionId:"one",position:1,token:"extra"})',

@@ -1,12 +1,18 @@
-import type { CandidateId, LibrarySearchItem, MatchResult, MatchStatus, OnlineSearchResult, ResourceCheck, TrackReference } from './music.ts'
+import type { CandidateId, MatchResult, MatchStatus, OnlineSearchRequest, OnlineSearchResult, ResourceCheck, TrackReference } from './music.ts'
 import type { AccountState } from './account.ts'
 import type { PlayerState, PlayerCommand, MediaEvent, PlaybackLibrary, LocalTrack, AudioCacheState } from './playback.ts'
-export const CHANNELS = Object.freeze({ state: 'su:state', preferences: 'su:preferences', collection: 'su:collection', notices: 'su:notices', changed: 'su:changed',
+
+export const CHANNELS = Object.freeze({
+  state: 'su:state', preferences: 'su:preferences', collection: 'su:collection', notices: 'su:notices', changed: 'su:changed',
   importShare: 'su:import-share', onlineSearch: 'su:online-search', librarySearch: 'su:library-search', matchTrack: 'su:match-track', checkResource: 'su:check-resource',
-  login:'su:login',cancelLogin:'su:cancel-login',logout:'su:logout',sync:'su:sync',cancelSync:'su:cancel-sync',pin:'su:pin',
-  player:'su:player',playerCommand:'su:player-command',mediaEvent:'su:media-event',playerChanged:'su:player-changed',playbackLibrary:'su:playback-library',
-  importLocal:'su:import-local',removeLocal:'su:remove-local',clearHistory:'su:clear-history',playHistory:'su:play-history',
-  chooseCache:'su:choose-cache',resetCache:'su:reset-cache',clearCache:'su:clear-cache',checkUpdate:'su:check-update',applyUpdate:'su:apply-update' })
+  login: 'su:login', cancelLogin: 'su:cancel-login', logout: 'su:logout', sync: 'su:sync', cancelSync: 'su:cancel-sync',
+  neteaseConnect: 'su:netease-connect', neteaseRefresh: 'su:netease-refresh', neteaseCancel: 'su:netease-cancel', neteaseLogout: 'su:netease-logout', switchAccount: 'su:switch-account',
+  searchHistory: 'su:search-history', addSearchHistory: 'su:add-search-history', removeSearchHistory: 'su:remove-search-history', clearSearchHistory: 'su:clear-search-history',
+  pin: 'su:pin',
+  player: 'su:player', playerCommand: 'su:player-command', mediaEvent: 'su:media-event', playerChanged: 'su:player-changed', playbackLibrary: 'su:playback-library',
+  importLocal: 'su:import-local', removeLocal: 'su:remove-local', clearHistory: 'su:clear-history', playHistory: 'su:play-history',
+  chooseCache: 'su:choose-cache', resetCache: 'su:reset-cache', clearCache: 'su:clear-cache', checkUpdate: 'su:check-update', applyUpdate: 'su:apply-update'
+})
 export const PAGES = ['library', 'search', 'history', 'review', 'local', 'settings', 'now'] as const
 export type Page = typeof PAGES[number]
 export type ThemeChoice = 'system' | 'day' | 'night'
@@ -73,8 +79,7 @@ export interface DesktopAPI {
   getCollection(id: string): Promise<Result<CollectionDetail | null>>
   getNotices(): Promise<Result<string>>
   importShare(link: string, name: string): Promise<Result<CollectionDetail>>
-  searchOnline(query: string, force?: boolean): Promise<Result<OnlineSearchResult>>
-  searchLibrary(query: string): Promise<Result<LibrarySearchItem[]>>
+  searchOnline(queryOrRequest: string | OnlineSearchRequest, force?: boolean): Promise<Result<OnlineSearchResult>>
   matchTrack(reference: TrackReference, force?: boolean): Promise<Result<MatchResult>>
   checkResource(candidate: CandidateId, force?: boolean): Promise<Result<ResourceCheck>>
   startLogin(): Promise<Result<AppState>>
@@ -82,21 +87,30 @@ export interface DesktopAPI {
   logout(): Promise<Result<AppState>>
   syncAccount(): Promise<Result<AppState>>
   cancelSync(): Promise<Result<AppState>>
-  setPinned(id:string,pinned:boolean):Promise<Result<AppState>>
-  getPlayer():Promise<Result<PlayerState>>
-  playerCommand(command:PlayerCommand):Promise<Result<PlayerState>>
-  reportMediaEvent(event:MediaEvent):Promise<Result<null>>
-  getPlaybackLibrary():Promise<Result<PlaybackLibrary>>
-  importLocal(reference?:TrackReference):Promise<Result<LocalTrack[]>>
-  removeLocal(id:string):Promise<Result<PlaybackLibrary>>
-  clearHistory():Promise<Result<PlaybackLibrary>>
-  playHistory(id:string):Promise<Result<PlayerState>>
-  chooseCacheDirectory():Promise<Result<AudioCacheState>>
-  resetCacheDirectory():Promise<Result<AudioCacheState>>
-  clearAudioCache():Promise<Result<AudioCacheState>>
-  checkUpdate():Promise<Result<UpdateInfo>>
-  applyUpdate():Promise<Result<UpdateInfo>>
-  onPlayerChanged(callback:(state:PlayerState)=>void):()=>void
+  connectNetease(uid: string): Promise<Result<AppState>>
+  refreshNetease(): Promise<Result<AppState>>
+  cancelNeteaseSync(): Promise<Result<AppState>>
+  logoutNetease(): Promise<Result<AppState>>
+  switchAccount(provider: 'kugou' | 'netease'): Promise<Result<AppState>>
+  getSearchHistory(): Promise<Result<string[]>>
+  addSearchHistory(query: string): Promise<Result<string[]>>
+  removeSearchHistory(query: string): Promise<Result<string[]>>
+  clearSearchHistory(): Promise<Result<string[]>>
+  setPinned(id: string, pinned: boolean): Promise<Result<AppState>>
+  getPlayer(): Promise<Result<PlayerState>>
+  playerCommand(command: PlayerCommand): Promise<Result<PlayerState>>
+  reportMediaEvent(event: MediaEvent): Promise<Result<null>>
+  getPlaybackLibrary(): Promise<Result<PlaybackLibrary>>
+  importLocal(reference?: TrackReference): Promise<Result<LocalTrack[]>>
+  removeLocal(id: string): Promise<Result<PlaybackLibrary>>
+  clearHistory(): Promise<Result<PlaybackLibrary>>
+  playHistory(id: string): Promise<Result<PlayerState>>
+  chooseCacheDirectory(): Promise<Result<AudioCacheState>>
+  resetCacheDirectory(): Promise<Result<AudioCacheState>>
+  clearAudioCache(): Promise<Result<AudioCacheState>>
+  checkUpdate(): Promise<Result<UpdateInfo>>
+  applyUpdate(): Promise<Result<UpdateInfo>>
+  onPlayerChanged(callback: (state: PlayerState) => void): () => void
   onStateChanged(callback: (state: AppState) => void): () => void
 }
 export function validatePreferencesPatch(input: unknown): Partial<Preferences> {

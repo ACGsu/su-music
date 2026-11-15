@@ -34,14 +34,14 @@ export class PlaybackSources {
       const presentation=this.db.getTrackPresentation(target.reference)
       if(!presentation)throw new PlayerError('TRACK_NOT_FOUND')
       const track=presentation.track
-      return{title:withoutAudioExtension(track.title??track.filename??'标题待补充'),artist:track.artist,collectionName:presentation.collectionName}
+      return{title:withoutAudioExtension(track.title??track.filename??'标题待补充'),artist:track.artist,collectionName:presentation.collectionName,durationMs:track.durationMs??null}
     }
     if(target.kind==='local'){
       const local=this.db.getLocal(target.localId);if(!local)throw new PlayerError('LOCAL_FILE_MISSING')
-      return{title:local.name,artist:null,collectionName:null}
+      return{title:local.name,artist:null,collectionName:null,durationMs:local.durationMs??null}
     }
     const candidate=this.candidate(target.candidate)
-    return{title:candidate.title,artist:candidate.artists.join('、')||null,collectionName:null}
+    return{title:candidate.title,artist:candidate.artists.join('、')||null,collectionName:null,durationMs:candidate.durationMs??null}
   }
   choose(reference:TrackReference,id:CandidateId,persistence:'once'|'remember'):SourceCandidate{
     const original=this.db.getOriginal(reference);if(!original)throw new PlayerError('TRACK_NOT_FOUND')

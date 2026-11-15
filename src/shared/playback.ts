@@ -4,7 +4,7 @@ import { validateCandidateId, validateTrackReference } from './music.ts'
 
 export type PlaybackMode='sequence'|'shuffle'|'repeat_one'
 export type PlaybackTarget={kind:'original';reference:TrackReference}|{kind:'candidate';candidate:CandidateId}|{kind:'local';localId:string}
-export interface QueueEntry {id:string;target:PlaybackTarget;title:string;artist:string|null;collectionName:string|null}
+export interface QueueEntry {id:string;target:PlaybackTarget;title:string;artist:string|null;collectionName:string|null;durationMs:number|null}
 export interface PlaybackNow {
   title:string;artist:string|null;album:string|null;version:string|null;expectedDurationMs:number|null;observedDurationMs?:number
   reference:TrackReference|null;original:Track|null;collectionName:string|null;candidate:SourceCandidate|null;localId:string|null

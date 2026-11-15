@@ -5,14 +5,15 @@ import { createHash } from 'node:crypto'
 import { DEFAULT_PREFERENCES, validatePreferencesPatch } from '../shared/contracts.ts'
 import type { Collection, CollectionDetail, CollectionKind, Preferences, Track } from '../shared/contracts.ts'
 import type { ImportedPlaylist, LibrarySearchItem, MatchResult, MatchStatus, OriginalTrack, TrackReference } from '../shared/music.ts'
-import type { AccountInfo, AccountLibrary } from '../shared/account.ts'
-import type {HistoryEntry,LocalTrack,ProblemTrack,PlaybackTarget} from '../shared/playback.ts'
-import type {SourceCandidate} from '../shared/music.ts'
-import {catalogTitle,publicTrack} from '../shared/track-name.ts'
-import {compareCandidate,matchCandidates} from './music/matching.ts'
-import {candidateTrack,reconcileCatalogPositions} from './music/catalog.ts'
+import type { AccountInfo, AccountLibrary, NeteaseAccountInfo, NeteaseLibrary } from '../shared/account.ts'
+import type { HistoryEntry, LocalTrack, ProblemTrack, PlaybackTarget } from '../shared/playback.ts'
+import type { SourceCandidate } from '../shared/music.ts'
+import { candidateKey } from '../shared/music.ts'
+import { catalogTitle, publicTrack } from '../shared/track-name.ts'
+import { compareCandidate, matchCandidates } from './music/matching.ts'
+import { candidateTrack, reconcileCatalogPositions } from './music/catalog.ts'
 
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 const MIGRATIONS: (string|((database:DatabaseSync)=>void))[] = [
   `CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
   `CREATE TABLE collections (
@@ -46,6 +47,11 @@ const MIGRATIONS: (string|((database:DatabaseSync)=>void))[] = [
     if(!database.prepare('PRAGMA table_info(p3_bindings)').all().some(row=>row.name==='chosen_by_user')){
       database.exec('ALTER TABLE p3_bindings ADD COLUMN chosen_by_user INTEGER NOT NULL DEFAULT 0; UPDATE p3_bindings SET chosen_by_user=1;')
     }
+  },
+  database=>{
+    if(!database.prepare('PRAGMA table_info(collections)').all().some(row=>row.name==='cover_url')){
+      database.exec('ALTER TABLE collections ADD COLUMN cover_url TEXT;')
+    }
   }
 ]
 
@@ -75,7 +81,6 @@ function repairCatalogNames(database:DatabaseSync):void{
     const beforeSignature=createHash('sha256').update(JSON.stringify(before)).digest('hex'),signature=createHash('sha256').update(JSON.stringify(original)).digest('hex')
     if(original.title!==before.title){
       database.prepare('UPDATE collection_tracks SET title=? WHERE collection_id=? AND position=?').run(original.title,collectionId,position)
-      // Cosmetic normalization keeps an already accepted binding attached to the same track.
       database.prepare('UPDATE p3_bindings SET original_signature=? WHERE collection_id=? AND position=? AND original_signature=?').run(signature,collectionId,position,beforeSignature)
     }
     const cached=database.prepare('SELECT result_json FROM p1_matches WHERE collection_id=? AND position=? AND original_signature=?').get(collectionId,position,beforeSignature)
@@ -135,19 +140,51 @@ export class MusicDatabase {
     this.setSetting('preferences', next)
     return next
   }
-  currentAccountKey(): string { const key=this.getSetting<unknown>('active-account-key','local');return typeof key==='string'&&(key==='local'||/^kg:[1-9]\d{0,15}$/.test(key))?key:'local' }
+  currentAccountKey(): string {
+    const key=this.getSetting<unknown>('active-account-key','local')
+    return typeof key==='string'&&(key==='local'||/^kg:[1-9]\d{0,15}$/.test(key)||/^ne:[1-9]\d{0,17}$/.test(key))?key:'local'
+  }
+  activeAccountProvider(): 'kugou' | 'netease' | 'local' {
+    const provider = this.getSetting<unknown>('active-account-provider', 'kugou')
+    return provider === 'netease' ? 'netease' : provider === 'kugou' ? 'kugou' : 'local'
+  }
   selectAccount(account: AccountInfo): void {
     if(!/^[1-9]\d{0,15}$/.test(account.id))throw new Error('INVALID_ACCOUNT')
     this.setSetting('active-account-key','kg:'+account.id)
+    this.setSetting('active-account-provider','kugou')
     this.setSetting('cached-kugou-account',account)
     this.setSetting('last-sync-at',this.getSetting<string|null>('last-sync:'+account.id,null))
   }
+  selectNeteaseAccount(account: NeteaseAccountInfo): void {
+    if(!/^[1-9]\d{0,17}$/.test(account.uid))throw new Error('INVALID_ACCOUNT')
+    this.setSetting('active-account-key','ne:'+account.uid)
+    this.setSetting('active-account-provider','netease')
+    this.setSetting('cached-netease-account',account)
+    this.setSetting('last-sync-at',this.getSetting<string|null>('last-sync:ne:'+account.uid,null))
+  }
+  switchAccount(provider: 'kugou' | 'netease'): void {
+    if (provider === 'kugou') {
+      const cached = this.getSetting<AccountInfo | null>('cached-kugou-account', null)
+      const key = cached && /^[1-9]\d{0,15}$/.test(cached.id) ? 'kg:' + cached.id : 'local'
+      this.setSetting('active-account-key', key)
+      this.setSetting('active-account-provider', 'kugou')
+      this.setSetting('last-sync-at', cached ? this.getSetting<string|null>('last-sync:'+cached.id, null) : null)
+    } else if (provider === 'netease') {
+      const cached = this.getSetting<NeteaseAccountInfo | null>('cached-netease-account', null)
+      const key = cached && /^[1-9]\d{0,17}$/.test(cached.uid) ? 'ne:' + cached.uid : 'local'
+      this.setSetting('active-account-key', key)
+      this.setSetting('active-account-provider', 'netease')
+      this.setSetting('last-sync-at', cached ? this.getSetting<string|null>('last-sync:ne:'+cached.uid, null) : null)
+    }
+  }
   getCollections(accountKey = this.currentAccountKey()): Collection[] {
+    const isSharedActive = (accountKey.startsWith('kg:') || accountKey.startsWith('ne:')) ? 1 : 0
     return this.db.prepare(`SELECT c.*, COUNT(t.position) AS position_count FROM collections c
-      LEFT JOIN collection_tracks t ON t.collection_id=c.id WHERE c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared') GROUP BY c.id ORDER BY c.directory_order,c.id`).all(accountKey,accountKey.startsWith('kg:')?1:0).map(row => ({
+      LEFT JOIN collection_tracks t ON t.collection_id=c.id WHERE c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared') GROUP BY c.id ORDER BY c.directory_order,c.id`).all(accountKey, isSharedActive).map(row => ({
       id: String(row.id), name: String(row.name), provider: String(row.provider), kind: String(row.kind) as CollectionKind,
       subtype: row.subtype === 'album' ? 'album' : null, pinned: row.pinned === 1,
-      lastOpenedAt: row.last_opened_at == null ? null : String(row.last_opened_at), positionCount: Number(row.position_count)
+      lastOpenedAt: row.last_opened_at == null ? null : String(row.last_opened_at), positionCount: Number(row.position_count),
+      coverUrl: row.cover_url == null ? null : String(row.cover_url)
     }))
   }
   getCollection(id: string, accountKey = this.currentAccountKey()): CollectionDetail | null {
@@ -156,8 +193,16 @@ export class MusicDatabase {
     const tracks=this.db.prepare(PRESENTATION_SELECT+' WHERE t.collection_id=? ORDER BY t.position').all(id).map(row=>this.presentTrack(row))
     return { collection, tracks }
   }
+  getCollectionCoverUrl(id: string): string | null {
+    const row = this.db.prepare('SELECT cover_url FROM collections WHERE id=?').get(id) as { cover_url?: string | null } | undefined
+    return row?.cover_url ?? null
+  }
+  getAllCollectionIds(): string[] {
+    return this.db.prepare('SELECT id FROM collections').all().map(r => String((r as { id: unknown }).id))
+  }
   getTrackPresentation(reference:TrackReference,accountKey=this.currentAccountKey()):{track:Track;collectionName:string}|null{
-    const row=this.db.prepare(PRESENTATION_SELECT+" WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND t.collection_id=? AND t.position=?").get(accountKey,accountKey.startsWith('kg:')?1:0,reference.collectionId,reference.position)
+    const isSharedActive = (accountKey.startsWith('kg:') || accountKey.startsWith('ne:')) ? 1 : 0
+    const row=this.db.prepare(PRESENTATION_SELECT+" WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND t.collection_id=? AND t.position=?").get(accountKey, isSharedActive, reference.collectionId, reference.position)
     return row?{track:this.presentTrack(row),collectionName:String(row.collection_name)}:null
   }
   private presentTrack(row:Record<string,unknown>):Track{
@@ -177,10 +222,9 @@ export class MusicDatabase {
     }
     return{...track,matchStatus:row.match_status==null?'unchecked':String(row.match_status) as MatchStatus,matchCheckedAt:row.checked_at==null?null:String(row.checked_at),playbackReady:ready,...(choice?{playbackChoice:choice}:{}),playbackIssue:issue}
   }
-  // This is main-process-only. No renderer IPC exposes catalog writes.
-  insertCollection(row: { id: string; name: string; kind: CollectionKind; provider: string; accountKey: string; sourceKey: string; subtype?: 'album'; order?: number }): void {
-    this.db.prepare('INSERT INTO collections(id,provider,account_key,source_key,name,kind,subtype,directory_order) VALUES(?,?,?,?,?,?,?,?)')
-      .run(row.id, row.provider, row.accountKey, row.sourceKey, row.name, row.kind, row.subtype ?? null, row.order ?? 0)
+  insertCollection(row: { id: string; name: string; kind: CollectionKind; provider: string; accountKey: string; sourceKey: string; subtype?: 'album'; order?: number; coverUrl?: string | null }): void {
+    this.db.prepare('INSERT INTO collections(id,provider,account_key,source_key,name,kind,subtype,directory_order,cover_url) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(row.id, row.provider, row.accountKey, row.sourceKey, row.name, row.kind, row.subtype ?? null, row.order ?? 0, row.coverUrl ?? null)
   }
   insertTrack(id: string, track: Track & { hash?: string; raw?: unknown }): void {
     this.db.prepare('INSERT INTO collection_tracks(collection_id,position,hash,title,filename,artist,album,duration_ms,version,raw_json) VALUES(?,?,?,?,?,?,?,?,?,?)')
@@ -229,20 +273,59 @@ export class MusicDatabase {
   }
   replaceSharedPlaylist(playlist: ImportedPlaylist): CollectionDetail {
     if (!playlist.sourceKey || !playlist.name || !playlist.tracks.length || playlist.tracks.some((track, index) => track.position !== index + 1)) throw new Error('SHARE_COUNT_MISMATCH')
-    const linked=this.db.prepare("SELECT id FROM collections WHERE provider='kugou' AND account_key=? AND source_global_key=? AND kind<>'shared'").get(this.currentAccountKey(),playlist.sourceKey)
+    const provider = playlist.provider ?? 'kugou'
+    const linked=this.db.prepare("SELECT id FROM collections WHERE provider=? AND account_key=? AND source_global_key=? AND kind<>'shared'").get(provider, this.currentAccountKey(),playlist.sourceKey)
     if(linked)return this.getCollection(String(linked.id))!
-    const previous = this.db.prepare("SELECT id,kind FROM collections WHERE provider='kugou' AND account_key='local' AND source_key=?").get(playlist.sourceKey)
+    const previous = this.db.prepare("SELECT id,kind FROM collections WHERE provider=? AND account_key='local' AND source_key=?").get(provider, playlist.sourceKey)
     if (previous && previous.kind !== 'shared') throw new Error('IMPORT_IDENTITY_CONFLICT')
-    const id = previous ? String(previous.id) : 'shared-' + createHash('sha256').update('kugou\nlocal\n' + playlist.sourceKey).digest('hex').slice(0, 32)
+    const id = previous ? String(previous.id) : 'shared-' + createHash('sha256').update(provider + '\nlocal\n' + playlist.sourceKey).digest('hex').slice(0, 32)
     this.db.exec('BEGIN IMMEDIATE')
     let change:CatalogChange|null=null
     try {
-      if (previous) this.db.prepare('UPDATE collections SET name=? WHERE id=?').run(playlist.name, id)
+      if (previous) {
+        if (playlist.coverUrl !== undefined) {
+          this.db.prepare('UPDATE collections SET name=?, cover_url=? WHERE id=?').run(playlist.name, playlist.coverUrl ?? null, id)
+        } else {
+          this.db.prepare('UPDATE collections SET name=? WHERE id=?').run(playlist.name, id)
+        }
+      }
       else {
         const order = Number(this.db.prepare('SELECT COALESCE(MAX(directory_order),0)+1 AS n FROM collections').get()!.n)
-        this.insertCollection({ id, name: playlist.name, kind: 'shared', provider: 'kugou', accountKey: 'local', sourceKey: playlist.sourceKey, order })
+        this.insertCollection({ id, name: playlist.name, kind: 'shared', provider, accountKey: 'local', sourceKey: playlist.sourceKey, order, coverUrl: playlist.coverUrl ?? null })
       }
       change=this.replaceCatalogTracks(id,playlist.tracks)
+      if (provider === 'netease' || playlist.tracks.some(t => t.songId)) {
+        for (const track of playlist.tracks) {
+          const songId = track.songId ?? (track.hash?.startsWith('ne:') ? track.hash.slice(3) : null)
+          if (!songId) continue
+          const original = { position: track.position, hash: track.hash ?? null, title: catalogTitle(track.title, track.filename, track.artist), filename: track.filename, artist: track.artist, album: track.album, durationMs: track.durationMs, version: track.version }
+          const signature = signatureOf(original)
+          const ref = { collectionId: id, position: track.position }
+          const candidate: SourceCandidate = {
+            providerId: 'gd', sourceId: 'netease', trackId: String(songId),
+            title: track.title || '标题待补充', artists: track.artist ? [track.artist] : [],
+            album: track.album, aliases: [], durationMs: track.durationMs, metadataComplete: true
+          }
+          this.setSourceCache('candidate', candidateKey(candidate), candidate, 86_400_000)
+          const existingBinding = this.db.prepare('SELECT chosen_by_user,slot FROM p3_bindings WHERE collection_id=? AND position=? AND chosen_by_user=1').get(id, track.position)
+          if (!existingBinding) {
+            this.db.prepare('INSERT INTO p3_bindings(collection_id,position,slot,original_signature,value_json,chosen_by_user) VALUES(?,?,?,?,?,0) ON CONFLICT(collection_id,position,slot) DO UPDATE SET original_signature=excluded.original_signature,value_json=excluded.value_json').run(id, track.position, 'original', signature, JSON.stringify({ target: { kind: 'candidate', candidate: { providerId: 'gd', sourceId: 'netease', trackId: String(songId) } }, candidate }))
+            this.db.prepare("INSERT INTO p3_choice(collection_id,position,slot) VALUES(?,?,'original') ON CONFLICT(collection_id,position) DO NOTHING").run(id, track.position)
+          }
+          const existingMatch = this.db.prepare('SELECT 1 FROM p1_matches WHERE collection_id=? AND position=?').get(id, track.position)
+          if (!existingMatch) {
+            const matchResult: MatchResult = {
+              original,
+              status: 'candidate_matched',
+              candidates: [{ candidate, decision: 'matched', reasons: ['网易云原曲 ID 自动匹配'], durationDifferenceMs: 0 }],
+              automaticCandidate: candidateKey(candidate),
+              checkedAt: playlist.observedAt,
+              fromCache: true
+            }
+            this.saveMatch(ref, signature, matchResult)
+          }
+        }
+      }
       this.setSetting('share-import:' + id, { originalUrl: playlist.originalUrl, observedAt: playlist.observedAt, positionCount: playlist.tracks.length })
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }
@@ -250,7 +333,8 @@ export class MusicDatabase {
     return this.getCollection(id)!
   }
   getOriginal(reference: TrackReference, accountKey = this.currentAccountKey()): OriginalTrack | null {
-    const row = this.db.prepare("SELECT t.* FROM collection_tracks t JOIN collections c ON c.id=t.collection_id WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND t.collection_id=? AND t.position=?").get(accountKey,accountKey.startsWith('kg:')?1:0, reference.collectionId, reference.position)
+    const isSharedActive = (accountKey.startsWith('kg:') || accountKey.startsWith('ne:')) ? 1 : 0
+    const row = this.db.prepare("SELECT t.* FROM collection_tracks t JOIN collections c ON c.id=t.collection_id WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND t.collection_id=? AND t.position=?").get(accountKey, isSharedActive, reference.collectionId, reference.position)
     if (!row) return null
     return originalFromRow(row)
   }
@@ -277,10 +361,11 @@ export class MusicDatabase {
   }
   searchLibrary(query: string, accountKey = this.currentAccountKey()): LibrarySearchItem[] {
     const pattern = '%' + query.replace(/[\\%_]/g, '\\$&') + '%'
+    const isSharedActive = (accountKey.startsWith('kg:') || accountKey.startsWith('ne:')) ? 1 : 0
     return this.db.prepare(PRESENTATION_SELECT+` LEFT JOIN p3_choice choice ON choice.collection_id=t.collection_id AND choice.position=t.position
       LEFT JOIN p3_bindings b ON b.collection_id=choice.collection_id AND b.position=choice.position AND b.slot=choice.slot
       LEFT JOIN p3_local local ON local.id=json_extract(b.value_json,'$.target.localId')
-      WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND (t.title LIKE ? ESCAPE '\\' OR t.filename LIKE ? ESCAPE '\\' OR t.artist LIKE ? ESCAPE '\\' OR t.album LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.title') LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.album') LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.artists') LIKE ? ESCAPE '\\' OR local.name LIKE ? ESCAPE '\\') ORDER BY c.directory_order,t.position LIMIT 100`).all(accountKey,accountKey.startsWith('kg:')?1:0, pattern, pattern, pattern, pattern,pattern,pattern,pattern,pattern).map(row => ({
+      WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND (t.title LIKE ? ESCAPE '\\' OR t.filename LIKE ? ESCAPE '\\' OR t.artist LIKE ? ESCAPE '\\' OR t.album LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.title') LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.album') LIKE ? ESCAPE '\\' OR json_extract(b.value_json,'$.candidate.artists') LIKE ? ESCAPE '\\' OR local.name LIKE ? ESCAPE '\\') ORDER BY c.directory_order,t.position LIMIT 100`).all(accountKey, isSharedActive, pattern, pattern, pattern, pattern,pattern,pattern,pattern,pattern).map(row => ({
       reference: { collectionId: String(row.collection_id), position: Number(row.position) }, collectionName: String(row.collection_name), collectionKind: String(row.kind),
       track: this.presentTrack(row)
     }))
@@ -312,18 +397,127 @@ export class MusicDatabase {
           this.db.prepare('DELETE FROM collections WHERE id=?').run(String(shared.id))
         }
         if(shared&&!existing){this.db.prepare('UPDATE collections SET account_key=?,source_key=? WHERE id=?').run(accountKey,collection.sourceKey,id)}
-        if(!existing&&!shared)this.insertCollection({id,name:collection.name,kind:collection.kind,provider:'kugou',accountKey,sourceKey:collection.sourceKey,subtype:collection.subtype??undefined,order:collection.order})
-        this.db.prepare('UPDATE collections SET name=?,kind=?,subtype=?,directory_order=?,source_global_key=? WHERE id=?').run(collection.name,collection.kind,collection.subtype,collection.order,collection.sourceGlobalKey,id)
+        if(!existing&&!shared)this.insertCollection({id,name:collection.name,kind:collection.kind,provider:'kugou',accountKey,sourceKey:collection.sourceKey,subtype:collection.subtype??undefined,order:collection.order,coverUrl:collection.coverUrl})
+        this.db.prepare('UPDATE collections SET name=?,kind=?,subtype=?,directory_order=?,source_global_key=?,cover_url=? WHERE id=?').run(collection.name,collection.kind,collection.subtype,collection.order,collection.sourceGlobalKey,collection.coverUrl??null,id)
         changes.push(this.replaceCatalogTracks(id,collection.tracks,sharedMemory))
         if(sharedMemory&&shared)changes.push({collectionId:String(shared.id),targetCollectionId:id,positions:reconcileCatalogPositions([...sharedMemory.values()].map(saved=>saved.original),collection.tracks)})
         this.db.prepare('INSERT INTO p2_directory(account_key,source_key,raw_json) VALUES(?,?,?) ON CONFLICT(account_key,source_key) DO UPDATE SET raw_json=excluded.raw_json').run(accountKey,collection.sourceKey,JSON.stringify(collection.raw))
       }
       for(const row of old)if(!newKeys.has(String(row.source_key))){this.db.prepare('DELETE FROM collections WHERE id=?').run(String(row.id));this.db.prepare('DELETE FROM p2_directory WHERE account_key=? AND source_key=?').run(accountKey,String(row.source_key));changes.push({collectionId:String(row.id),positions:new Map()})}
-      this.selectAccount(library.owner);this.setSetting('last-sync-at',library.at);this.setSetting('last-sync:'+library.owner.id,library.at)
+      if(this.activeAccountProvider()==='kugou'){this.selectAccount(library.owner)}else{this.setSetting('cached-kugou-account',library.owner)}
+      this.setSetting('last-sync-at',library.at);this.setSetting('last-sync:'+library.owner.id,library.at)
       this.db.exec('COMMIT')
     }catch(error){this.db.exec('ROLLBACK');throw error}
     this.notifyCatalog(changes)
     return{added:[...newKeys].filter(key=>!oldKeys.has(key)).length,removed:[...oldKeys].filter(key=>!newKeys.has(key)).length,positionCount:library.collections.reduce((sum,row)=>sum+row.tracks.length,0)}
+  }
+  replaceNeteaseLibrary(library: NeteaseLibrary): { added: number; removed: number; positionCount: number } {
+    const accountKey = 'ne:' + library.owner.uid
+    if (!library.directoryVerified || library.rawDirectoryCount !== library.collections.length || !Array.isArray(library.collections)) throw new Error('INCOMPLETE_ACCOUNT_LIBRARY')
+    const old = this.db.prepare("SELECT id,source_key FROM collections WHERE account_key=? AND kind<>'shared'").all(accountKey)
+    if (old.length && !library.collections.length) throw new Error('EMPTY_ACCOUNT_LIBRARY')
+    const oldKeys = new Set(old.map(row => String(row.source_key))), newKeys = new Set(library.collections.map(row => row.sourceKey))
+    if (newKeys.size !== library.collections.length) throw new Error('DUPLICATE_ACCOUNT_COLLECTION')
+    const changes: CatalogChange[] = []
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const collection of library.collections) {
+        if (collection.reportedCount !== collection.tracks.length || collection.tracks.some((track, index) => track.position !== index + 1)) throw new Error('INCOMPLETE_ACCOUNT_TRACKS')
+        const existing = this.db.prepare('SELECT id FROM collections WHERE account_key=? AND provider=? AND source_key=?').get(accountKey, 'netease', collection.sourceKey)
+        const id = existing ? String(existing.id) : 'ne-' + createHash('sha256').update(accountKey + '\n' + collection.sourceKey).digest('hex').slice(0, 32)
+        if (!existing) {
+          this.insertCollection({ id, name: collection.name, kind: collection.kind, provider: 'netease', accountKey, sourceKey: collection.sourceKey, subtype: collection.subtype ?? undefined, order: collection.order, coverUrl: collection.coverUrl })
+        }
+        this.db.prepare('UPDATE collections SET name=?,kind=?,subtype=?,directory_order=?,cover_url=? WHERE id=?').run(collection.name, collection.kind, collection.subtype, collection.order, collection.coverUrl ?? null, id)
+        const neteaseTracks = collection.tracks.map(t => ({
+          ...t,
+          hash: 'ne:' + t.songId
+        }))
+        changes.push(this.replaceCatalogTracks(id, neteaseTracks))
+
+        // Direct binding using original netease song ID for GD/netease candidate
+        for (const track of neteaseTracks) {
+          const original = { position: track.position, hash: track.hash ?? null, title: catalogTitle(track.title, track.filename, track.artist), filename: track.filename, artist: track.artist, album: track.album, durationMs: track.durationMs, version: track.version }
+          const signature = signatureOf(original)
+          const ref = { collectionId: id, position: track.position }
+          const candidate: SourceCandidate = {
+            providerId: 'gd', sourceId: 'netease', trackId: String(track.songId),
+            title: track.title || '标题待补充', artists: track.artist ? [track.artist] : [],
+            album: track.album, aliases: [], durationMs: track.durationMs, metadataComplete: true
+          }
+          this.setSourceCache('candidate', candidateKey(candidate), candidate, 86_400_000)
+          const existingBinding = this.db.prepare('SELECT chosen_by_user,slot FROM p3_bindings WHERE collection_id=? AND position=? AND chosen_by_user=1').get(id, track.position)
+          if (!existingBinding) {
+            this.db.prepare('INSERT INTO p3_bindings(collection_id,position,slot,original_signature,value_json,chosen_by_user) VALUES(?,?,?,?,?,0) ON CONFLICT(collection_id,position,slot) DO UPDATE SET original_signature=excluded.original_signature,value_json=excluded.value_json').run(id, track.position, 'original', signature, JSON.stringify({ target: { kind: 'candidate', candidate: { providerId: 'gd', sourceId: 'netease', trackId: String(track.songId) } }, candidate }))
+            this.db.prepare("INSERT INTO p3_choice(collection_id,position,slot) VALUES(?,?,'original') ON CONFLICT(collection_id,position) DO NOTHING").run(id, track.position)
+          }
+          const existingMatch = this.db.prepare('SELECT 1 FROM p1_matches WHERE collection_id=? AND position=?').get(id, track.position)
+          if (!existingMatch) {
+            const matchResult: MatchResult = {
+              original,
+              status: 'candidate_matched',
+              candidates: [{ candidate, decision: 'matched', reasons: ['网易云原曲 ID 自动匹配'], durationDifferenceMs: 0 }],
+              automaticCandidate: candidateKey(candidate),
+              checkedAt: library.at,
+              fromCache: true
+            }
+            this.saveMatch(ref, signature, matchResult)
+          }
+        }
+      }
+      for (const row of old) if (!newKeys.has(String(row.source_key))) {
+        this.db.prepare('DELETE FROM collections WHERE id=?').run(String(row.id))
+        changes.push({ collectionId: String(row.id), positions: new Map() })
+      }
+      if (this.activeAccountProvider() === 'netease') {
+        this.selectNeteaseAccount(library.owner)
+      } else {
+        this.setSetting('cached-netease-account', library.owner)
+      }
+      this.setSetting('last-sync-at', library.at)
+      this.setSetting('last-sync:ne:' + library.owner.uid, library.at)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    this.notifyCatalog(changes)
+    return {
+      added: [...newKeys].filter(key => !oldKeys.has(key)).length,
+      removed: [...oldKeys].filter(key => !newKeys.has(key)).length,
+      positionCount: library.collections.reduce((sum, row) => sum + row.tracks.length, 0)
+    }
+  }
+  getNeteasePlaylistCache(id: string, updateTime: number | null, trackCount: number): (Track & { songId: string; raw: unknown })[] | null {
+    const key = `netease_playlist:${id}:${updateTime ?? 0}:${trackCount}`
+    return this.getSourceCache<(Track & { songId: string; raw: unknown })[]>('netease_playlist', key)
+  }
+  setNeteasePlaylistCache(id: string, updateTime: number | null, trackCount: number, tracks: (Track & { songId: string; raw: unknown })[]): void {
+    const key = `netease_playlist:${id}:${updateTime ?? 0}:${trackCount}`
+    this.setSourceCache('netease_playlist', key, tracks, 7 * 86_400_000)
+  }
+  getSearchHistory(): string[] {
+    const list = this.getSetting<unknown>('search-history', [])
+    return Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).slice(0, 20) : []
+  }
+  addSearchHistory(query: string): string[] {
+    const trimmed = query.trim()
+    if (!trimmed) return this.getSearchHistory()
+    const current = this.getSearchHistory().filter(item => item !== trimmed)
+    current.unshift(trimmed)
+    const next = current.slice(0, 20)
+    this.setSetting('search-history', next)
+    return next
+  }
+  removeSearchHistory(query: string): string[] {
+    const trimmed = query.trim()
+    const current = this.getSearchHistory().filter(item => item !== trimmed)
+    this.setSetting('search-history', current)
+    return current
+  }
+  clearSearchHistory(): string[] {
+    this.setSetting('search-history', [])
+    return []
   }
   originalSignature(reference:TrackReference):string|null{const original=this.getOriginal(reference);return original?createHash('sha256').update(JSON.stringify(original)).digest('hex'):null}
   saveBinding(reference:TrackReference,slot:'original'|'alternative'|'local',value:{target:PlaybackTarget;candidate?:SourceCandidate},selected=true):void{
@@ -382,7 +576,8 @@ export class MusicDatabase {
   }
   clearIssue(reference:TrackReference):void{this.db.prepare('DELETE FROM p3_issues WHERE collection_id=? AND position=?').run(reference.collectionId,reference.position)}
   getIssues():ProblemTrack[]{
-    const rows=this.db.prepare("SELECT t.collection_id,t.position,t.title,t.filename,c.name,m.match_status,i.reason FROM collection_tracks t JOIN collections c ON c.id=t.collection_id LEFT JOIN p1_matches m ON m.collection_id=t.collection_id AND m.position=t.position LEFT JOIN p3_issues i ON i.collection_id=t.collection_id AND i.position=t.position LEFT JOIN p3_choice choice ON choice.collection_id=t.collection_id AND choice.position=t.position WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND (i.reason IS NOT NULL OR m.match_status IN ('needs_review','not_found') OR choice.slot='local') ORDER BY c.directory_order,t.position").all(this.currentAccountKey(),this.currentAccountKey().startsWith('kg:')?1:0)
+    const isSharedActive = (this.currentAccountKey().startsWith('kg:') || this.currentAccountKey().startsWith('ne:')) ? 1 : 0
+    const rows=this.db.prepare("SELECT t.collection_id,t.position,t.title,t.filename,c.name,m.match_status,i.reason FROM collection_tracks t JOIN collections c ON c.id=t.collection_id LEFT JOIN p1_matches m ON m.collection_id=t.collection_id AND m.position=t.position LEFT JOIN p3_issues i ON i.collection_id=t.collection_id AND i.position=t.position LEFT JOIN p3_choice choice ON choice.collection_id=t.collection_id AND choice.position=t.position WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND (i.reason IS NOT NULL OR m.match_status IN ('needs_review','not_found') OR choice.slot='local') ORDER BY c.directory_order,t.position").all(this.currentAccountKey(), isSharedActive)
     return rows.flatMap(row=>{
       const reference={collectionId:String(row.collection_id),position:Number(row.position)},binding=this.getBinding(reference)
       const local=binding?.target.kind==='local'?this.getLocal(binding.target.localId):null,missing=binding?.target.kind==='local'&&(!local||local.missing)

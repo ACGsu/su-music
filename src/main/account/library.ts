@@ -36,6 +36,18 @@ async function directory(transport:KugouTransport,session:KugouSession,signal:Ab
     if(!rows.length)throw new AccountError('DIRECTORY_COUNT_MISMATCH')
   }throw new AccountError('DIRECTORY_PAGE_LIMIT')
 }
+export function extractKugouCover(raw: Record<string, unknown> | null | undefined): string | null {
+  if (!raw || typeof raw !== 'object') return null
+  const candidate = raw.pic ?? raw.picpath ?? raw.pic_path ?? raw.cover ?? raw.cover_url ?? raw.cover_img_url ?? raw.img ?? raw.special_img ?? raw.imgurl ?? raw.album_img
+  if (typeof candidate !== 'string' || !candidate.trim()) return null
+  let url = candidate.trim()
+  if (url.includes('{size}')) url = url.replaceAll('{size}', '500')
+  if (url.startsWith('//')) url = 'https:' + url
+  else if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = url.startsWith('/') ? 'https://imge.kugou.com' + url : 'https://imge.kugou.com/' + url
+  }
+  return url
+}
 function directorySignature(value:{lists:Record<string,unknown>[];count:number;version:unknown}):string{return JSON.stringify([value.count,value.version,value.lists.map(row=>[listIdentity(row),row.source,row.is_def,row.name,row.count])])}
 export async function readKugouLibrary(transport:KugouTransport,session:KugouSession,owner:AccountInfo,signal:AbortSignal,onProgress:(value:SyncProgress)=>void):Promise<AccountLibrary>{
   const initial=await directory(transport,session,signal),unknown=initial.lists.filter(row=>!classifyKugouList(row)).length
@@ -44,6 +56,7 @@ export async function readKugouLibrary(transport:KugouTransport,session:KugouSes
   const collections:AccountCollection[]=[]
   for(const [order,list]of initial.lists.entries()){
     const classification=classifyKugouList(list)!;const tracks:AccountCollection['tracks']=[];let count:number|null=null,version:unknown=undefined
+    let trackCover: string | null = null
     for(let page=1;page<=200;page++){
       const body=await transport.call('tracks',session,{listid:list.listid as string|number,type:Number(list.type),page,pagesize:100},signal),data=record(body.data)
       if(body.status!==1||!data||!Number.isInteger(data.count)||Number(data.count)<0)throw new AccountError('TRACK_RESPONSE_INVALID')
@@ -51,6 +64,7 @@ export async function readKugouLibrary(transport:KugouTransport,session:KugouSes
       if(Number(data.page)!==page||Number(data.pagesize)!==100)throw new AccountError('TRACK_PAGE_PARAMETERS_IGNORED')
       if(count!==null&&(count!==data.count||version!==data.list_ver))throw new AccountError('TRACKS_CHANGED')
       count=Number(data.count);version=data.list_ver
+      if(!trackCover)trackCover=extractKugouCover(data)
       const rows=data.info===null&&tracks.length===count?[]:data.info
       if(!Array.isArray(rows)||rows.length>100)throw new AccountError('TRACK_RESPONSE_INVALID')
       for(const value of rows){const raw=record(value);if(!raw)throw new AccountError('TRACK_RESPONSE_INVALID');tracks.push(normalizeKugouTrack(raw,tracks.length+1))}
@@ -60,7 +74,8 @@ export async function readKugouLibrary(transport:KugouTransport,session:KugouSes
     }
     if(tracks.length!==Number(list.count))throw new AccountError('DIRECTORY_TRACK_COUNT_MISMATCH')
     const global=list.global_collection_id??list.global_specialid
-    collections.push({sourceKey:listIdentity(list),sourceGlobalKey:typeof global==='string'||typeof global==='number'?String(global):null,name:String(list.name),...classification,order,reportedCount:tracks.length,raw:list,tracks})
+    const coverUrl=extractKugouCover(list)??trackCover
+    collections.push({sourceKey:listIdentity(list),sourceGlobalKey:typeof global==='string'||typeof global==='number'?String(global):null,name:String(list.name),...classification,order,reportedCount:tracks.length,coverUrl,raw:list,tracks})
     onProgress({phase:'reading_tracks',completedCollections:collections.length,totalCollections:initial.count,rawDirectoryCount:initial.count,unknownClassifications:0})
   }
   onProgress({phase:'checking_directory',completedCollections:collections.length,totalCollections:initial.count,rawDirectoryCount:initial.count,unknownClassifications:0})

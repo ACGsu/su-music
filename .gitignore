@@ -25,3 +25,10 @@ private/
 credentials.bin
 *.audio
 *.part
+
+# IDE, editor and OS metadata.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

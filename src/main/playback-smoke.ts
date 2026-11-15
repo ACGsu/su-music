@@ -72,13 +72,14 @@ export function seedP3Smoke(db:MusicDatabase,phase:string):void{
   }
 }
 export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:PlayerController,cache:SongCache,media:MediaRegistry,phase:string):Promise<void>{
+  window.webContents.on('console-message',(_e,_level,msg)=>console.log('P3_CONSOLE:',msg))
   const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,testProtocol:2,suite:'playback',scale:1,functional:false,packaged:app.isPackaged,network:'mocked GD and audio responses; no external calls',actualDecoder:'Chromium HTMLAudioElement; generated WAV PCM16/48kHz',audioOutputMuted:true,nativeDialogSimulated:true,schemaVersion:db.schemaVersion()}
   const originalDialog=dialog.showOpenDialog
   dialog.showOpenDialog=(async(...args:unknown[])=>{const options=args.at(-1) as {properties?:string[]};return{canceled:false,filePaths:[options.properties?.includes('openDirectory')?path.join(root,'chosen-cache'):path.join(root,'fixtures','local.wav')]}}) as typeof dialog.showOpenDialog
   const evaluate=<T>(code:string):Promise<T>=>window.webContents.executeJavaScript(code,true) as Promise<T>
   const wait=async(check:()=>boolean,timeout=20000):Promise<void>=>{const until=Date.now()+timeout;while(Date.now()<until){if(check())return;await delay(40)}throw new Error('P3_DESKTOP_WAIT_TIMEOUT')}
   const waitUI=async(code:string):Promise<void>=>{const until=Date.now()+15000;while(Date.now()<until){if(await evaluate<boolean>(code))return;await delay(50)}throw new Error('P3_UI_WAIT_TIMEOUT')}
-  const click=async(selector:string):Promise<void>=>{await evaluate('document.querySelector('+JSON.stringify(selector)+').click()');await delay(100)}
+  const click=async(selector:string):Promise<void>=>{const until=Date.now()+5000;while(Date.now()<until){const ok=await evaluate<boolean>('(()=>{const el=document.querySelector('+JSON.stringify(selector)+');if(!el)return false;el.click();return true})()');if(ok){await delay(100);return}await delay(50)}throw new Error('CLICK_TIMEOUT on '+selector)}
   const command=async(value:unknown):Promise<void>=>{assert.equal((await evaluate<{ok:boolean}>('window.suMusic.playerCommand('+JSON.stringify(value)+')')).ok,true);await delay(40)}
   const set=async(value:unknown):Promise<void>=>{assert.equal((await evaluate<{ok:boolean}>('window.suMusic.setPreferences('+JSON.stringify(value)+')')).ok,true);await delay(100)}
   const audio=():Promise<{time:number;duration:number;paused:boolean;volume:number;ready:number}>=>evaluate('(()=>{const a=document.querySelector("[data-audio]");return{time:a.currentTime,duration:a.duration,paused:a.paused,volume:a.volume,ready:a.readyState}})()')
@@ -86,7 +87,7 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');await delay(250)
     for(let attempt=0;attempt<3;attempt++)try{const image=await window.webContents.capturePage();assert(!image.isEmpty());fs.writeFileSync(path.join(root,name+'.png'),image.toPNG());return}catch(error){if(attempt===2)throw error;await delay(500)}
   }
-  const openVersion=async(position:number):Promise<void>=>{await set({currentPage:'library'});await click('[data-track-position="'+position+'"]');await click('[data-edit-version]');await delay(120)}
+  const openVersion=async(position:number):Promise<void>=>{await set({currentPage:'library'});const already=await evaluate<boolean>('Boolean(document.querySelector("[data-inline-actions=\\"'+position+'\\"]"))');if(!already)await click('[data-track-position="'+position+'"]');await click('[data-edit-version]');await delay(120)}
   const chooseThroughPanel=async(persistence:'once'|'remember'):Promise<void>=>{
     await openVersion(1)
     await click('[data-candidate-id="gd:netease:1002"] .button')

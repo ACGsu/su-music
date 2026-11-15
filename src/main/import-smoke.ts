@@ -50,7 +50,7 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
   const wait = async (script: string): Promise<void> => {
     const until=Date.now()+20_000
     while(Date.now()<until){if(await evaluate<boolean>(script))return;await delay(80)}
-    throw new Error('P1_SMOKE_RENDERER_WAIT_TIMEOUT')
+    throw new Error('P1_SMOKE_RENDERER_WAIT_TIMEOUT: ' + script)
   }
   const click = async (selector: string): Promise<void> => { await evaluate('document.querySelector('+JSON.stringify(selector)+').click()');await delay(120) }
   const input = async (selector: string,value: string): Promise<void> => { await evaluate('(()=>{const element=document.querySelector('+JSON.stringify(selector)+');element.value='+JSON.stringify(value)+';element.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(80) }
@@ -142,20 +142,20 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
     assert((await evaluate<string>('document.querySelector("[data-resource-result]").textContent')).includes('局部读取记录，整曲播放另行记录'))
     assert.equal(await evaluate<boolean>('document.querySelector(".play-button").disabled'),true)
     report.partialResourceStatusSeparatedFromPlayback=true;await capture('night-resource')
-    await click('[data-nav="search"]');await click('[data-search-scope="online"]');await input('[data-song-query]','Carefree');await click('[data-song-search]')
+    await click('[data-nav="search"]');await input('[data-song-query]','Carefree');await click('[data-song-search]')
     await wait('document.querySelectorAll("[data-online-result]").length === 1');await capture('night-search')
     await click('[data-online-result] .playback-actions .button:last-child');await wait('document.querySelector("[data-version-panel]")?.textContent.includes("Carefree")')
     assert.equal(await evaluate<boolean>('Boolean(document.querySelector("[data-version-panel] [role=status]"))'),false)
     report.onlineSearchAndCandidatePanelVerified=true
-    await click('[data-search-scope="library"]');await input('[data-song-query]','スパークル');await click('[data-song-search]')
-    await wait('document.querySelectorAll(".search-results .song-result").length === 2')
+    await click('[data-nav="library"]');await wait('Boolean(document.querySelector("[data-shared-item]"))');await click('[data-shared-item]');await wait('document.querySelectorAll(".track-table tbody tr").length === 22')
+    await input('[data-detail-filter-input]','スパークル');await wait('document.querySelectorAll(".track-table tbody tr").length === 2')
     report.librarySearchPositionsVerified=true
-    await click('.search-results .song-result .song-title-action');await wait('Boolean(document.querySelector("[data-match-status]"))')
+    await click('[data-track-position="8"]');await click('[data-edit-version]');await wait('Boolean(document.querySelector("[data-version-panel]"))')
     window.setSize(960,640);await delay(200);await capture('minimum-version-panel')
     assert.equal(await evaluate<boolean>('document.documentElement.scrollWidth>innerWidth||document.querySelector(".content").scrollWidth>document.querySelector(".content").clientWidth'),false)
     report.minimumWindowNoOuterOverflow=true
     await set({currentPage:'settings'})
-    await click('[data-theme-choice="night"]');await click('[data-density="compact"]')
+    await click('[data-theme-choice="night"]')
     await evaluate('(()=>{const input=document.querySelector("[data-volume]");input.value="87";input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}));})()')
     await wait('document.querySelector("[data-volume]").value==="87"')
     assert.equal(db.getPreferences().volume,87);report.preferenceControlsVerified=true

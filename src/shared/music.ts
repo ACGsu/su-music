@@ -27,8 +27,17 @@ export interface MatchResult {
   checkedAt: string
   fromCache: boolean
 }
+export interface OnlineSearchRequest {
+  query: string
+  page?: number
+  pageSize?: number
+  refresh?: boolean
+}
 export interface OnlineSearchResult {
   query: string
+  page: number
+  pageSize: number
+  hasMore: boolean
   candidates: SourceCandidate[]
   fromCache: boolean
   metadataWarning: string | null
@@ -53,11 +62,13 @@ export interface ResourceCheck {
   reason: string | null
 }
 export interface ImportedPlaylist {
+  provider?: 'kugou' | 'netease'
   sourceKey: string
   name: string
   originalUrl: string
   observedAt: string
-  tracks: (OriginalTrack & { raw: unknown })[]
+  coverUrl?: string | null
+  tracks: (OriginalTrack & { songId?: string; raw: unknown })[]
 }
 export function candidateKey(candidate: CandidateId): string { return `${candidate.providerId}:${candidate.sourceId}:${candidate.trackId}` }
 
@@ -70,6 +81,20 @@ function object(input: unknown, keys: string[]): Record<string, unknown> {
 export function validateQuery(input: unknown): string {
   if (typeof input !== 'string' || !input.trim() || input.length > 200 || /[\u0000-\u001f]/u.test(input)) throw new Error('INVALID_REQUEST')
   return input.trim()
+}
+export function validateOnlineSearchRequest(input: unknown): Required<OnlineSearchRequest> {
+  if (typeof input === 'string') {
+    return { query: validateQuery(input), page: 1, pageSize: 20, refresh: false }
+  }
+  const value = object(input, ['query', 'page', 'pageSize', 'refresh'])
+  const query = validateQuery(value.query)
+  const page = value.page === undefined ? 1 : typeof value.page === 'number' && Number.isSafeInteger(value.page) && value.page >= 1 ? value.page : null
+  if (page === null) throw new Error('INVALID_REQUEST')
+  const pageSize = value.pageSize === undefined ? 20 : typeof value.pageSize === 'number' && Number.isSafeInteger(value.pageSize) && value.pageSize >= 1 && value.pageSize <= 50 ? value.pageSize : null
+  if (pageSize === null) throw new Error('INVALID_REQUEST')
+  const refresh = value.refresh === undefined ? false : typeof value.refresh === 'boolean' ? value.refresh : null
+  if (refresh === null) throw new Error('INVALID_REQUEST')
+  return { query, page, pageSize, refresh }
 }
 export function validateTrackReference(input: unknown): TrackReference {
   const value = object(input, ['collectionId', 'position'])

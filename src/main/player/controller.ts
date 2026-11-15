@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto'
 import type {MusicDatabase} from '../database.ts'
 import type {CatalogChange} from '../database.ts'
-import type {SourceCandidate} from '../../shared/music.ts'
+import type {SourceCandidate,TrackReference} from '../../shared/music.ts'
 import type {PlayerState,PlayerCommand,MediaEvent,QueueEntry,PlaybackTarget,HistoryEntry,PlaybackNow} from '../../shared/playback.ts'
 import type {PlaybackAttempts} from '../music/gd.ts'
 import type {PlaybackSources} from './source.ts'
@@ -11,6 +11,32 @@ import {SourceError} from '../music/errors.ts'
 
 export function emptyPlayer():PlayerState{return{phase:'idle',queue:[],currentId:null,mode:'sequence',now:null,media:null,desiredPlaying:false,positionMs:0,durationMs:null,seekToMs:0,seekSerial:0,reason:null,retryAt:null,skipped:[],historyRevision:0}}
 const sameReference=(a:PlaybackTarget,b:PlaybackTarget):boolean=>a.kind==='original'&&b.kind==='original'&&a.reference.collectionId===b.reference.collectionId&&a.reference.position===b.reference.position
+
+interface SavedSession {
+  queue: Array<{
+    id: string
+    target: PlaybackTarget
+    title: string
+    artist: string | null
+    collectionName: string | null
+    durationMs: number | null
+  }>
+  currentId: string | null
+  positionMs: number
+  durationMs: number | null
+  now?: {
+    title: string
+    artist: string | null
+    album: string | null
+    version: string | null
+    expectedDurationMs: number | null
+    observedDurationMs?: number
+    reference: TrackReference | null
+    collectionName: string | null
+    binding: 'same' | 'alternative' | 'local' | 'direct'
+    source?: string
+  } | null
+}
 
 export class PlayerController {
   private state=emptyPlayer()
@@ -43,6 +69,119 @@ export class PlayerController {
     this.db=db;this.sources=sources;this.media=media;this.changed=changed;this.options=options
     this.accountKey=db.currentAccountKey()
     const mode=db.getSetting<unknown>('playback-mode','sequence');if(['sequence','shuffle','repeat_one'].includes(String(mode)))this.state.mode=mode as PlayerState['mode']
+    this.restoreSession()
+  }
+  private saveSession():void{
+    try{
+      if(!this.state.queue.length){
+        this.db.setSetting('playback-session:'+this.accountKey,null)
+        return
+      }
+      const session:SavedSession={
+        queue:this.state.queue.slice(0,20000).map(item=>({
+          id:item.id,
+          target:item.target,
+          title:item.title,
+          artist:item.artist,
+          collectionName:item.collectionName,
+          durationMs:item.durationMs??null
+        })),
+        currentId:this.state.currentId,
+        positionMs:0,
+        durationMs:this.state.durationMs,
+        now:this.state.now?{
+          title:this.state.now.title,
+          artist:this.state.now.artist,
+          album:this.state.now.album,
+          version:this.state.now.version,
+          expectedDurationMs:this.state.now.expectedDurationMs,
+          observedDurationMs:this.state.now.observedDurationMs,
+          reference:this.state.now.reference,
+          collectionName:this.state.now.collectionName,
+          binding:this.state.now.binding,
+          source:this.state.now.source
+        }:null
+      }
+      this.db.setSetting('playback-session:'+this.accountKey,session)
+    }catch{}
+  }
+  private restoreSession():void{
+    try{
+      const saved=this.db.getSetting<SavedSession|null>('playback-session:'+this.accountKey,null)
+      if(!saved||typeof saved!=='object'||!Array.isArray(saved.queue)||!saved.queue.length)return
+      const restoredQueue:QueueEntry[]=[]
+      for(const item of saved.queue){
+        if(!item||typeof item!=='object'||typeof item.id!=='string'||!item.target||typeof item.target!=='object'||typeof item.target.kind!=='string')continue
+        let meta:{title:string;artist:string|null;collectionName:string|null;durationMs:number|null}
+        try{
+          meta=this.sources.describe(item.target)
+        }catch{
+          if(item.target.kind==='original'||item.target.kind==='local')continue
+          meta={
+            title:typeof item.title==='string'?item.title:'未知曲目',
+            artist:typeof item.artist==='string'?item.artist:null,
+            collectionName:typeof item.collectionName==='string'?item.collectionName:null,
+            durationMs:typeof item.durationMs==='number'&&Number.isFinite(item.durationMs)?item.durationMs:null
+          }
+        }
+        if(item.target.kind==='original')this.signatures.set(item.id,this.db.originalSignature(item.target.reference))
+        restoredQueue.push({id:item.id,target:item.target,title:meta.title,artist:meta.artist,collectionName:meta.collectionName,durationMs:meta.durationMs})
+      }
+      if(!restoredQueue.length)return
+      this.state.queue=restoredQueue
+      const currentEntry=(typeof saved.currentId==='string'&&restoredQueue.find(e=>e.id===saved.currentId))||restoredQueue[0]
+      this.state.currentId=currentEntry?.id??null
+      const durationMs=typeof saved.durationMs==='number'&&Number.isFinite(saved.durationMs)?saved.durationMs:(currentEntry?.durationMs??null)
+      this.state.durationMs=durationMs
+      this.state.positionMs=0
+      this.state.seekToMs=0
+      if(currentEntry){
+        if(saved.now&&typeof saved.now==='object'&&typeof saved.now.title==='string'){
+          this.state.now={
+            title:saved.now.title,
+            artist:saved.now.artist??currentEntry.artist,
+            album:saved.now.album??null,
+            version:saved.now.version??null,
+            expectedDurationMs:durationMs,
+            reference:currentEntry.target.kind==='original'?currentEntry.target.reference:null,
+            original:null,
+            collectionName:currentEntry.collectionName,
+            candidate:null,
+            localId:currentEntry.target.kind==='local'?currentEntry.target.localId:null,
+            binding:saved.now.binding||'direct',
+            source:saved.now.source||'上次播放',
+            format:null,
+            returnedBitrateKbps:null,
+            verifiedBitrateKbps:null,
+            qualityCode:null,
+            fromCache:true
+          }
+        }else{
+          this.state.now={
+            title:currentEntry.title,
+            artist:currentEntry.artist,
+            album:null,
+            version:null,
+            expectedDurationMs:durationMs,
+            reference:currentEntry.target.kind==='original'?currentEntry.target.reference:null,
+            original:null,
+            collectionName:currentEntry.collectionName,
+            candidate:null,
+            localId:currentEntry.target.kind==='local'?currentEntry.target.localId:null,
+            binding:'direct',
+            source:'上次播放',
+            format:null,
+            returnedBitrateKbps:null,
+            verifiedBitrateKbps:null,
+            qualityCode:null,
+            fromCache:true
+          }
+        }
+      }
+      this.state.phase='idle'
+      this.state.desiredPlaying=false
+      this.state.media=null
+    }catch{}
   }
   private clock():number{return(this.options.now??Date.now)()}
   snapshot():PlayerState{return structuredClone(this.state)}
@@ -72,13 +211,15 @@ export class PlayerController {
       if(entry.id===this.state.currentId){currentMoved=true;if(this.state.now)this.state.now.reference=structuredClone(entry.target.reference)}
     }
     if(currentMoved&&this.state.phase==='resolving'&&!this.state.media){this.generation++;void this.resolveCurrent(false,false)}
-    this.revision();this.emit()
+    this.revision();this.saveSession();this.emit()
   }
   accountChanged():void{
     const key=this.db.currentAccountKey();if(key===this.accountKey)return
-    this.flushHistory();this.generation++;this.release();const mode=this.state.mode,revision=this.state.historyRevision+1
+    this.flushHistory();this.saveSession();this.generation++;this.release();const mode=this.state.mode,revision=this.state.historyRevision+1
     this.state={...emptyPlayer(),mode,historyRevision:revision};this.accountKey=key
-    this.overrides.clear();this.signatures.clear();this.historyContext.clear();this.shuffleVisited.clear();this.navigation=[];this.navigationIndex=-1;this.history=null;this.emit()
+    this.overrides.clear();this.signatures.clear();this.historyContext.clear();this.shuffleVisited.clear();this.navigation=[];this.navigationIndex=-1;this.history=null
+    this.restoreSession()
+    this.emit()
   }
   command(command:PlayerCommand):PlayerState{
     this.accountChanged()
@@ -132,7 +273,9 @@ export class PlayerController {
         if(current&&sameReference(current.target,target))this.begin(current,false);else this.emit();break
       }
       case'retry':{const current=this.current();if(current)this.begin(current,false,true);break}
-    }return this.snapshot()
+    }
+    this.saveSession()
+    return this.snapshot()
   }
   private replace(queue:QueueEntry[],index:number,automatic=false):void{
     this.flushHistory();this.generation++;this.release();this.state.queue=queue;this.navigation=[];this.navigationIndex=-1;this.shuffleVisited.clear();this.state.skipped=[];this.pass.clear()
@@ -184,7 +327,7 @@ export class PlayerController {
       if(context)resolved.now={...resolved.now,reference:context.reference,original:context.original,collectionName:context.collectionName,binding:context.binding,expectedDurationMs:resolved.now.expectedDurationMs??context.observedDurationMs??null}
       const media=this.media.register(resolved.stream)
       this.state.now=resolved.now;this.state.media=media;this.state.phase=this.state.desiredPlaying?'loading':'paused';this.state.reason=null;this.state.retryAt=null
-      this.state.seekToMs=this.state.positionMs;this.state.seekSerial++;if(this.state.desiredPlaying)this.watchdog();this.emit()
+      this.state.seekToMs=this.state.positionMs;this.state.seekSerial++;if(this.state.desiredPlaying)this.watchdog();this.saveSession();this.emit()
     }catch(error){
       if(epoch!==this.generation)return
       if(error instanceof SourceError&&error.code==='SOURCE_RATE_LIMITED'&&this.rateWaits<1&&this.attempts.used<this.attempts.limit){
@@ -213,16 +356,16 @@ export class PlayerController {
     const quality=this.media.quality(event.id)
     if(quality&&this.state.now){this.state.now.format=quality.format;this.state.now.verifiedBitrateKbps=quality.bitrateKbps}
     switch(event.type){
-      case'metadata':this.state.phase=this.state.desiredPlaying?'loading':'paused';break
+      case'metadata':this.state.phase=this.state.desiredPlaying?'loading':'paused';this.saveSession();break
       case'playing':{
         if(!this.state.desiredPlaying)return
         this.clearTimer();this.state.phase='playing';this.state.reason=null;this.pass.clear();this.shuffleVisited.add(this.state.currentId!)
         const current=this.current();if(current?.target.kind==='original')this.db.clearIssue(current.target.reference)
         if(!this.historyStarted&&this.state.now&&current){this.historyStarted=true;this.history={id:randomUUID(),at:new Date(this.clock()).toISOString(),target:structuredClone(current.target),now:structuredClone(this.state.now),playedMs:0,completed:false};this.revision();this.flushHistory()}
-        this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();break
+        this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();this.saveSession();break
       }
-      case'paused':if(!this.state.desiredPlaying){this.state.phase='paused';this.clearTimer();this.flushHistory()}break
-      case'seeking':this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();break
+      case'paused':if(!this.state.desiredPlaying){this.state.phase='paused';this.clearTimer();this.flushHistory();this.saveSession()}break
+      case'seeking':this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();this.saveSession();break
       case'progress':{
         const now=this.clock(),difference=event.positionMs-this.lastPosition,elapsed=now-this.lastProgressAt
         if(this.history&&this.state.phase==='playing'&&this.state.desiredPlaying&&difference>0&&difference<=Math.max(1500,elapsed*1.5)){
@@ -232,7 +375,7 @@ export class PlayerController {
         }
         this.lastPosition=event.positionMs;this.lastProgressAt=now
         this.state.positionMs=event.positionMs
-        if(now-this.lastHistorySave>5000)this.flushHistory()
+        if(now-this.lastHistorySave>5000){this.flushHistory();this.saveSession()}
         if(this.state.phase==='loading'&&this.state.desiredPlaying)this.watchdog()
         break
       }
@@ -243,6 +386,7 @@ export class PlayerController {
         this.state.positionMs=event.positionMs
         if(this.history){this.history.completed=this.state.durationMs!==null&&this.coverage.length===1&&this.coverage[0]!.start<500&&this.coverage[0]!.end>=this.state.durationMs-600;this.flushHistory()}
         const current=this.current();if(current)this.overrides.delete(current.id)
+        this.saveSession()
         const next=this.nextEntry(true);if(next)this.begin(next,true);else this.finishQueue(false);return
       }
     }this.emit()
@@ -268,7 +412,7 @@ export class PlayerController {
       const next=this.nextEntry(false);if(next){this.begin(next,true);return}
       this.finishQueue(true);return
     }
-    this.state.phase=error instanceof PlayerError&&error.review?'needs_review':'error';this.state.desiredPlaying=false;this.state.reason=reason;this.state.retryAt=null;this.emit()
+    this.state.phase=error instanceof PlayerError&&error.review?'needs_review':'error';this.state.desiredPlaying=false;this.state.reason=reason;this.state.retryAt=null;this.saveSession();this.emit()
   }
   private nextEntry(ended:boolean):QueueEntry|null{
     const current=this.current(),index=this.state.queue.findIndex(item=>item.id===current?.id)
@@ -282,7 +426,7 @@ export class PlayerController {
   }
   private finishQueue(failed:boolean):void{
     this.flushHistory();this.release();this.generation++;this.state.desiredPlaying=false;this.state.phase=failed?'error':'ended';this.state.retryAt=null
-    this.state.reason=failed?'队列中没有可继续播放的歌曲，已停止。':null;this.emit()
+    this.state.reason=failed?'队列中没有可继续播放的歌曲，已停止。':null;this.saveSession();this.emit()
   }
   private flushHistory():void{
     if(!this.history)return
@@ -290,14 +434,14 @@ export class PlayerController {
     this.db.addHistory(this.history,this.accountKey);this.lastHistorySave=this.clock()
   }
   clearHistory():void{this.history=null;this.historyStarted=true;this.db.clearHistory();this.revision();this.emit()}
-  libraryChanged():void{this.revision();this.emit()}
+  libraryChanged():void{this.revision();this.saveSession();this.emit()}
   playHistory(id:string):PlayerState{
     const history=this.db.getHistoryEntry(id);if(!history)throw new PlayerError('TRACK_NOT_FOUND')
     let target:PlaybackTarget|null=null
     if(history.now.candidate){this.sources.rememberSnapshot(history.now.candidate);target={kind:'candidate',candidate:{providerId:history.now.candidate.providerId,sourceId:history.now.candidate.sourceId,trackId:history.now.candidate.trackId}}}
     else if(history.now.localId){if(!this.sources.localMatches(history.now))throw new PlayerError('LOCAL_FILE_MISSING');target={kind:'local',localId:history.now.localId}}
-    if(target){const entry=this.makeEntry(target);entry.collectionName=history.now.collectionName;this.historyContext.set(entry.id,history.now);this.replace([entry],0);return this.snapshot()}
+    if(target){const entry=this.makeEntry(target);entry.collectionName=history.now.collectionName;this.historyContext.set(entry.id,history.now);this.replace([entry],0);this.saveSession();return this.snapshot()}
     return this.command({type:'play',target:history.target})
   }
-  close():void{this.flushHistory();this.generation++;this.release()}
+  close():void{this.flushHistory();this.saveSession();this.generation++;this.release()}
 }
