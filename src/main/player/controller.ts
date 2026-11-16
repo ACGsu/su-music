@@ -8,6 +8,7 @@ import type {PlaybackSources} from './source.ts'
 import type {MediaRegistry} from './media.ts'
 import {PlayerError,playerMessage} from './errors.ts'
 import {SourceError} from '../music/errors.ts'
+import {validatePlaybackTarget} from '../../shared/playback.ts'
 
 export function emptyPlayer():PlayerState{return{phase:'idle',queue:[],currentId:null,mode:'sequence',now:null,media:null,desiredPlaying:false,positionMs:0,durationMs:null,seekToMs:0,seekSerial:0,reason:null,retryAt:null,skipped:[],historyRevision:0}}
 const sameReference=(a:PlaybackTarget,b:PlaybackTarget):boolean=>a.kind==='original'&&b.kind==='original'&&a.reference.collectionId===b.reference.collectionId&&a.reference.position===b.reference.position
@@ -20,6 +21,7 @@ interface SavedSession {
     artist: string | null
     collectionName: string | null
     durationMs: number | null
+    historyNow?: PlaybackNow
   }>
   currentId: string | null
   positionMs: number
@@ -84,7 +86,8 @@ export class PlayerController {
           title:item.title,
           artist:item.artist,
           collectionName:item.collectionName,
-          durationMs:item.durationMs??null
+          durationMs:item.durationMs??null,
+          ...(this.historyContext.has(item.id)?{historyNow:this.historyContext.get(item.id)!}:{})
         })),
         currentId:this.state.currentId,
         positionMs:0,
@@ -112,6 +115,17 @@ export class PlayerController {
       const restoredQueue:QueueEntry[]=[]
       for(const item of saved.queue){
         if(!item||typeof item!=='object'||typeof item.id!=='string'||!item.target||typeof item.target!=='object'||typeof item.target.kind!=='string')continue
+        try{item.target=validatePlaybackTarget(item.target)}catch{continue}
+        const context=item.historyNow
+        if(context&&typeof context==='object'&&typeof context.title==='string'){
+          const sameCandidate=item.target.kind==='candidate'&&context.candidate&&
+            context.candidate.providerId===item.target.candidate.providerId&&context.candidate.sourceId===item.target.candidate.sourceId&&context.candidate.trackId===item.target.candidate.trackId
+          const sameLocal=item.target.kind==='local'&&context.localId===item.target.localId
+          if(sameCandidate||sameLocal){
+            if(sameCandidate)this.sources.rememberSnapshot(context.candidate!)
+            this.historyContext.set(item.id,structuredClone(context))
+          }
+        }
         let meta:{title:string;artist:string|null;collectionName:string|null;durationMs:number|null}
         try{
           meta=this.sources.describe(item.target)
@@ -124,6 +138,8 @@ export class PlayerController {
             durationMs:typeof item.durationMs==='number'&&Number.isFinite(item.durationMs)?item.durationMs:null
           }
         }
+        const historyNow=this.historyContext.get(item.id)
+        if(historyNow)meta={title:historyNow.title,artist:historyNow.artist,collectionName:historyNow.collectionName,durationMs:historyNow.observedDurationMs??historyNow.expectedDurationMs}
         if(item.target.kind==='original')this.signatures.set(item.id,this.db.originalSignature(item.target.reference))
         restoredQueue.push({id:item.id,target:item.target,title:meta.title,artist:meta.artist,collectionName:meta.collectionName,durationMs:meta.durationMs})
       }
@@ -178,6 +194,8 @@ export class PlayerController {
           }
         }
       }
+      const historyNow=currentEntry?this.historyContext.get(currentEntry.id):null
+      if(historyNow)this.state.now={...structuredClone(historyNow),fromCache:true}
       this.state.phase='idle'
       this.state.desiredPlaying=false
       this.state.media=null
@@ -247,7 +265,7 @@ export class PlayerController {
       case'queue_remove':{
         const index=this.state.queue.findIndex(item=>item.id===command.id);if(index<0)break
         const wasCurrent=this.state.currentId===command.id,wanted=this.state.desiredPlaying
-        this.state.queue.splice(index,1);this.overrides.delete(command.id);this.signatures.delete(command.id)
+        this.state.queue.splice(index,1);this.overrides.delete(command.id);this.signatures.delete(command.id);this.historyContext.delete(command.id)
         if(wasCurrent){this.flushHistory();this.generation++;this.release();const next=this.state.queue[index]??this.state.queue[0];if(next&&wanted)this.begin(next,true);else{this.state.currentId=null;this.state.now=null;this.state.positionMs=0;this.state.durationMs=null;this.state.desiredPlaying=false;this.state.phase='idle';this.emit()}}
         else this.emit();break
       }
@@ -320,11 +338,12 @@ export class PlayerController {
   private async resolveCurrent(force:boolean,recovery:boolean):Promise<void>{
     const epoch=this.generation,entry=this.current();if(!entry)return
     try{
+      const context=this.historyContext.get(entry.id)
+      if(context?.localId&&!this.sources.localMatches(context))throw new PlayerError('LOCAL_FILE_MISSING')
       if(entry.target.kind==='original'&&this.signatures.get(entry.id)!==this.db.originalSignature(entry.target.reference))throw new PlayerError('TRACK_CHANGED')
       const resolved=await this.sources.resolve(entry.target,{attempts:this.attempts,force,recovery,override:this.overrides.get(entry.id),isCurrent:()=>epoch===this.generation})
       if(epoch!==this.generation)return
-      const context=this.historyContext.get(entry.id)
-      if(context)resolved.now={...resolved.now,reference:context.reference,original:context.original,collectionName:context.collectionName,binding:context.binding,expectedDurationMs:resolved.now.expectedDurationMs??context.observedDurationMs??null}
+      if(context)resolved.now={...resolved.now,title:context.title,artist:context.artist,album:context.album,version:context.version,reference:context.reference,original:context.original,collectionName:context.collectionName,binding:context.binding,expectedDurationMs:resolved.now.expectedDurationMs??context.observedDurationMs??null}
       const media=this.media.register(resolved.stream)
       this.state.now=resolved.now;this.state.media=media;this.state.phase=this.state.desiredPlaying?'loading':'paused';this.state.reason=null;this.state.retryAt=null
       this.state.seekToMs=this.state.positionMs;this.state.seekSerial++;if(this.state.desiredPlaying)this.watchdog();this.saveSession();this.emit()
@@ -435,13 +454,28 @@ export class PlayerController {
   }
   clearHistory():void{this.history=null;this.historyStarted=true;this.db.clearHistory();this.revision();this.emit()}
   libraryChanged():void{this.revision();this.saveSession();this.emit()}
-  playHistory(id:string):PlayerState{
+  private historyEntry(id:string):QueueEntry{
     const history=this.db.getHistoryEntry(id);if(!history)throw new PlayerError('TRACK_NOT_FOUND')
     let target:PlaybackTarget|null=null
     if(history.now.candidate){this.sources.rememberSnapshot(history.now.candidate);target={kind:'candidate',candidate:{providerId:history.now.candidate.providerId,sourceId:history.now.candidate.sourceId,trackId:history.now.candidate.trackId}}}
     else if(history.now.localId){if(!this.sources.localMatches(history.now))throw new PlayerError('LOCAL_FILE_MISSING');target={kind:'local',localId:history.now.localId}}
-    if(target){const entry=this.makeEntry(target);entry.collectionName=history.now.collectionName;this.historyContext.set(entry.id,history.now);this.replace([entry],0);this.saveSession();return this.snapshot()}
-    return this.command({type:'play',target:history.target})
+    const entry=this.makeEntry(target??history.target)
+    if(target){
+      Object.assign(entry,{title:history.now.title,artist:history.now.artist,collectionName:history.now.collectionName,durationMs:history.now.observedDurationMs??history.now.expectedDurationMs})
+      this.historyContext.set(entry.id,structuredClone(history.now))
+    }
+    return entry
+  }
+  playHistory(id:string):PlayerState{
+    this.accountChanged()
+    this.replace([this.historyEntry(id)],0);this.saveSession();return this.snapshot()
+  }
+  enqueueHistory(id:string):PlayerState{
+    this.accountChanged()
+    if(this.state.queue.length>=20000)throw new PlayerError('QUEUE_LIMIT')
+    const entry=this.historyEntry(id),current=this.state.queue.findIndex(item=>item.id===this.state.currentId)
+    this.state.queue.splice(Math.max(0,current+1),0,entry)
+    this.saveSession();this.emit();return this.snapshot()
   }
   close():void{this.flushHistory();this.saveSession();this.generation++;this.release()}
 }

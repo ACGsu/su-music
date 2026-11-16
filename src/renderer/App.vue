@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from './components/Icon.vue'
 import ShareImport from './components/ShareImport.vue'
 import SourceSearch from './components/SourceSearch.vue'
@@ -39,6 +39,7 @@ const noticesDialog = ref<HTMLDialogElement | null>(null)
 const updateInfo = ref<UpdateInfo | null>(null)
 const updateBusy = ref(false)
 const updateApplying = ref(false)
+const backgroundBusy = ref(false)
 const contentElement = ref<HTMLElement | null>(null)
 
 // Search Flyout & History state
@@ -46,14 +47,21 @@ const searchFlyoutOpen = ref(false)
 const searchFlyoutQuery = ref('')
 const searchHistory = ref<string[]>([])
 const searchFlyoutInput = ref<HTMLInputElement | null>(null)
-const activeSearchQuery = ref('')
-const sourceSearchComponent = ref<InstanceType<typeof SourceSearch> | null>(null)
+const searchRequest = ref<{ id: number; query: string } | null>(null)
+let searchRequestId = 0
 
 let libraryScroll = 0, detailRefreshGeneration = 0, lastSuccessfulSync: string | null = null, previousScroll = 0, playbackRevision = -1, libraryGeneration = 0
 let unsubscribe: (() => void) | undefined
 let unsubscribePlayer: (() => void) | undefined
 
 const page = computed(() => state.value?.preferences.currentPage || 'library')
+watch(page, async (target, previous) => {
+  if (previous === 'search' && target !== 'search') searchRequest.value = null
+  if (target === 'search' && previous !== 'search') {
+    await nextTick()
+    if (contentElement.value) contentElement.value.scrollTop = 0
+  }
+})
 const preferences = computed(() => state.value?.preferences)
 const distributionLabel = computed(() => state.value?.app.distribution === 'portable' ? 'PORTABLE' : state.value?.app.distribution === 'installed' ? 'INSTALLER' : 'DEVELOPMENT')
 const currentReference = computed(() => {
@@ -125,6 +133,10 @@ const sidebarAccountText = computed(() => {
     return acc.netease?.connected ? '网易云已连接' : '网易云未连接'
   }
   return acc.kugou?.phase === 'authenticated' ? '酷狗已连接' : acc.kugou?.cachedAccount ? '酷狗 · 本地缓存' : '酷狗尚未连接'
+})
+const sidebarAccountConnected = computed(() => {
+  const account = state.value?.account
+  return account?.activeProvider === 'netease' ? Boolean(account.netease?.connected) : account?.kugou?.phase === 'authenticated'
 })
 
 const canSwitchProvider = computed(() => {
@@ -232,6 +244,10 @@ async function playHistory(id: string): Promise<void> {
   const result = await window.suMusic.playHistory(id)
   if (!result.ok) error.value = result.error.message
 }
+async function enqueueHistory(id: string): Promise<void> {
+  const result = await window.suMusic.enqueueHistory(id)
+  if (!result.ok) error.value = result.error.message
+}
 
 async function openSourceCollection(id: string): Promise<void> {
   const item = state.value?.library.collections.find(value => value.id === id)
@@ -291,6 +307,13 @@ async function patchPreferences(patch: Partial<Preferences>): Promise<void> {
   if (result.ok) { applyState(result.value); error.value = '' }
   else error.value = result.error.message
 }
+async function setBackgroundPlayback(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  backgroundBusy.value = true
+  try { await patchPreferences({ backgroundPlayback: input.checked }) }
+  catch { error.value = '后台播放设置未能保存，请稍后重试。' }
+  finally { input.checked = preferences.value?.backgroundPlayback ?? false; backgroundBusy.value = false }
+}
 
 async function navigate(target: Page, returning = false): Promise<void> {
   if (target !== page.value) versionOpen.value = null
@@ -308,7 +331,7 @@ async function navigate(target: Page, returning = false): Promise<void> {
   if (['history', 'review', 'local', 'settings'].includes(target)) void reloadPlaybackLibrary()
   if (returning) {
     await nextTick()
-    if (contentElement.value) contentElement.value.scrollTop = previousScroll
+    if (contentElement.value) contentElement.value.scrollTop = target === 'search' ? 0 : previousScroll
   }
 }
 
@@ -447,7 +470,7 @@ async function submitFlyoutSearch(queryToSearch?: string): Promise<void> {
   if (!q) return
   searchFlyoutOpen.value = false
   searchFlyoutQuery.value = ''
-  activeSearchQuery.value = q
+  searchRequest.value = { id: ++searchRequestId, query: q }
   await navigate('search')
 }
 
@@ -605,7 +628,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="sidebar-bottom">
         <button class="sidebar-account-btn" data-sidebar-account @click="quickSwitchProvider" title="点击快速切换曲库">
-          <span class="neutral-dot" aria-hidden="true"></span>
+          <span class="neutral-dot" :class="{ connected: sidebarAccountConnected }" aria-hidden="true" data-account-dot></span>
           <span>{{ sidebarAccountText }}</span>
           <span v-if="canSwitchProvider" class="sidebar-account-switch">切换</span>
         </button>
@@ -836,7 +859,7 @@ onBeforeUnmount(() => {
                       <span v-if="!track.playbackReady" class="track-match-note"> · {{ matchLabel(track.matchStatus) }}</span>
                     </p>
                   </td>
-                  <td class="album-cell">{{ track.album || '—' }}</td>
+                  <td class="album-cell"><span class="album-text" :title="track.album || '—'">{{ track.album || '—' }}</span></td>
                   <td class="duration-cell">{{ duration(track.durationMs) }}</td>
                   <td class="state-cell">
                     <TrackActions
@@ -902,8 +925,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <SourceSearch
-          ref="sourceSearchComponent"
-          :initial-query="activeSearchQuery"
+          :request="searchRequest"
           @original="inspectOriginal"
           @candidate="inspectCandidate"
           @play="target => command({ type: 'play', target })"
@@ -962,6 +984,16 @@ onBeforeUnmount(() => {
                 {{ updateApplying ? '正在下载' : '一键更新' }}
               </button>
             </div>
+          </div>
+        </section>
+        <section class="settings-group">
+          <h2>播放与关闭</h2>
+          <div class="setting-row">
+            <div><h3>后台播放</h3><p>开启后，关闭窗口将进入系统托盘并继续播放。</p></div>
+            <label class="background-toggle">
+              <input type="checkbox" role="switch" aria-label="后台播放" data-background-playback :checked="preferences?.backgroundPlayback ?? false" :disabled="backgroundBusy" @change="setBackgroundPlayback" />
+              <span>{{ preferences?.backgroundPlayback ? '已开启' : '已关闭' }}</span>
+            </label>
           </div>
         </section>
         <section class="settings-group">
@@ -1026,6 +1058,7 @@ onBeforeUnmount(() => {
         @import-local="importLocal()"
         @remove-local="removeLocal"
         @play-history="playHistory"
+        @enqueue-history="enqueueHistory"
         @clear-history="clearHistory"
         @back="navigate(previousPage, true)"
       />

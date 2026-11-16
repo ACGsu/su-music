@@ -13,7 +13,7 @@ const emit = defineEmits<{ open: [collection: Collection] }>()
       <CollectionArtwork :name="collection.name" :url="collection.coverUrl" :album="collection.subtype === 'album'" />
     </span>
     <span class="collection-dock">
-      <span class="collection-name">{{ collection.name }}</span>
+      <span class="collection-name" :title="collection.name">{{ collection.name }}</span>
       <span class="collection-enter" aria-hidden="true"><Icon name="arrow" /></span>
     </span>
     <span class="collection-meta">{{ meta }}</span>
@@ -90,6 +90,14 @@ const emit = defineEmits<{ open: [collection: Collection] }>()
   width: 37px;
   border-left: 1px solid var(--line-light);
   transition: background 100ms, color 100ms;
+}
+.collection-card:not(.is-list) .collection-name {
+  display: block;
+  align-self: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 .collection-enter .icon { width: 15px; height: 15px; }
 .collection-card .collection-meta {

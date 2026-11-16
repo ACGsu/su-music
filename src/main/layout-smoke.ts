@@ -126,6 +126,20 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
       const yellowText=Array.from(document.querySelectorAll('button')).every(e=>{const s=getComputedStyle(e);return s.backgroundColor!=='rgb(255, 250, 0)'||s.color==='rgb(11, 12, 14)'});
       return{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,outerOverflow:document.documentElement.scrollWidth>innerWidth+1,contentOverflow:content.scrollWidth>content.clientWidth+1,footerVisible:r.left>=-1&&r.right<=innerWidth+1&&r.bottom<=innerHeight+1&&inFooter,accent,yellowText};})()`)
     ;(report.scenes as unknown[]).push({label,...value});assert(!value.outerOverflow,'P4_OUTER_OVERFLOW '+label);assert(!value.contentOverflow,'P4_CONTENT_OVERFLOW '+label);assert(value.footerVisible,'P4_FOOTER_CLIPPED '+label);assert(value.yellowText,'P4_ACCENT_TEXT '+label);assert.equal(value.accent.toUpperCase(),'#FFFA00');assert(Math.abs(value.dpr-scale)<0.02,'P4_DEVICE_SCALE')
+    assert(await evaluate<boolean>('Array.from(document.querySelectorAll(".progress input,.volume-control input")).every(e=>{const s=getComputedStyle(e),actual=parseFloat(s.getPropertyValue("--range-fill")),expected=Math.max(0,Math.min(100,Number(e.value)/Number(e.max)*100));return Math.abs(actual-expected)<0.1&&s.backgroundImage.includes("rgb(255, 250, 0)")})'),'P4_RANGE_FILL '+label)
+    assert(await evaluate<boolean>(`(async()=>{
+      const result=await window.suMusic.getState(),account=result.value.account??{};
+      const expected=account.activeProvider==='netease'?Boolean(account.netease?.connected):account.kugou?.phase==='authenticated';
+      const dot=document.querySelector('[data-account-dot]'),probe=document.createElement('span');
+      probe.style.color='var(--muted)';document.body.append(probe);const gray=getComputedStyle(probe).color;probe.remove();
+      return dot.classList.contains('connected')===expected&&getComputedStyle(dot).backgroundColor===(expected?'rgb(255, 250, 0)':gray);
+    })()`),'P4_CONNECTION_DOT '+label)
+  }
+  const checkGridNames=async():Promise<void>=>{
+    assert(await evaluate<boolean>('Array.from(document.querySelectorAll("[data-collections] .collection-name")).every(e=>{const s=getComputedStyle(e);return e.title===e.textContent&&s.whiteSpace==="nowrap"&&s.textOverflow==="ellipsis"&&s.overflow==="hidden"})'))
+    for(const text of ['长歌单名称'.repeat(20),'VeryLongNameWithoutAnySpaces'.repeat(10),'中文 Mixed 日本語'.repeat(15)]){
+      assert(await evaluate<boolean>('(()=>{const e=document.querySelector("[data-collections] .collection-name"),original=e.textContent;e.textContent='+JSON.stringify(text)+';const s=getComputedStyle(e),ok=e.scrollWidth>e.clientWidth&&e.clientHeight<=parseFloat(s.lineHeight)+22;e.textContent=original;return ok})()'))
+    }
   }
   try{
     await wait('document.body.dataset.ready==="true"')
@@ -139,6 +153,8 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     }
     window.setSize(1280,820);await set({currentPage:'library',theme:'day',volume:0,libraryView:'grid',librarySort:'recent'})
     await wait('document.querySelectorAll("[data-collections] .collection-card").length===120');await layout('large-overview-1280');await capture('day-large-overview')
+    for(const theme of ['day','night']){await set({theme});for(const size of [[1280,820],[960,640]]){window.setSize(size[0]!,size[1]!);await delay(100);await checkGridNames();await layout(theme+'-grid-ellipsis-'+size[0])}}
+    window.setSize(1280,820);await set({theme:'day'})
     for(const view of ['list','grid']){await click('[data-view="'+view+'"]');if(functional)assert.deepEqual((await names()).sort(),collections.map(item=>item.name).sort());await layout('large-overview-'+view)}
     if(functional){
     report.gridAndListContentsAgree=true
@@ -160,6 +176,17 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     await input('[aria-label="筛选歌单名称"]','大型歌单');await wait('document.querySelectorAll("[data-collections] .collection-card").length===1')
     const opened=performance.now();await click('[data-collections] .collection-card');await wait('document.querySelectorAll(".track-table tbody tr").length===5000');const renderedMs=performance.now()-opened
     ;(report.timings as unknown[]).push({operation:'open 5000-row playlist including IPC and render',elapsedMs:Math.round(renderedMs)});if(functional)assert(renderedMs<8000,'P4_LARGE_RENDER_TOO_SLOW')
+    for(const theme of ['day','night']){
+      await set({theme})
+      for(const size of [[1280,820],[960,640]]){
+        window.setSize(size[0]!,size[1]!);await delay(80)
+        for(const text of ['超长专辑名称'.repeat(30),'LongAlbumWithoutAnySpaces'.repeat(20),'中文 Original Album 日本語'.repeat(20)]){
+          assert(await evaluate<boolean>('(()=>{const e=document.querySelector("td .album-text"),original=e.textContent,originalTitle=e.title;e.textContent='+JSON.stringify(text)+';const s=getComputedStyle(e),ok=s.webkitLineClamp==="2"&&s.overflow==="hidden"&&e.getBoundingClientRect().height<=parseFloat(s.lineHeight)*2+1&&e.scrollHeight>e.clientHeight;e.textContent=original;return ok&&originalTitle===original})()'),'P4_ALBUM_ELLIPSIS')
+        }
+        await layout(theme+'-album-ellipsis-'+size[0])
+      }
+    }
+    window.setSize(1280,820);await set({theme:'day'})
     await evaluate('document.querySelector("[data-track-position=\\"5000\\"]").scrollIntoView({block:"center"})');await layout('last-track-visible');await capture('day-last-track')
     await click('.back-button');if(functional){assert.equal(await evaluate<string>('document.querySelector("[aria-label=\\"筛选歌单名称\\"]").value'),'大型歌单');assert.equal(await evaluate<string>('document.querySelector("[aria-label=\\"歌单排序\\"]").value'),'count');assert.equal(await evaluate<string>('document.querySelector(".category-tabs button:nth-child(2)").getAttribute("aria-pressed")'),'true');assert.equal(await evaluate<string>('document.querySelector("[data-view=grid]").getAttribute("aria-pressed")'),'true');report.collectionFilterAndDetailReturn=true}
     await input('[aria-label="筛选歌单名称"]','');await sort('recent');if(functional){assert.equal((await names())[0],large.name);report.recentSortTracksOpenedCollection=true;}await click('.category-tabs button:nth-child(1)');await click('.pinned-item');await wait('document.querySelectorAll(".track-table tbody tr").length===5000')
@@ -169,6 +196,14 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     }
     await click('[data-row-play="1"]');await wait('document.querySelector("[data-audio]")?.currentTime>0.15&&!document.querySelector("[data-audio]")?.paused')
     const token=player.snapshot().media!.id
+    await evaluate('window.suMusic.playerCommand({type:"control",action:"pause"})');await delay(100)
+    for(const percent of [0,50,100]){
+      await set({volume:percent})
+      await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value=String(Number(e.max)*'+percent+'/100);e.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(80)
+      await layout('range-percent-'+percent)
+    }
+    await set({volume:0});await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value="0";e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));})()');await evaluate('window.suMusic.playerCommand({type:"control",action:"resume"})');await delay(80)
+    report.rangeFillEndpointsAndMidpointVerified=true
     for(const theme of ['day','night'] as const){
       await set({theme})
       for(const page of ['library','search','history','review','local','settings','now']){

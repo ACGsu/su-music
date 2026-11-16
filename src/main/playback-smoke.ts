@@ -15,6 +15,7 @@ import {matchCandidates} from './music/matching.ts'
 import type {SourceCandidate,ImportedPlaylist} from '../shared/music.ts'
 import {candidateKey} from '../shared/music.ts'
 import type {PlayerState} from '../shared/playback.ts'
+import type {BackgroundPlayback} from './background.ts'
 
 const A:SourceCandidate={providerId:'gd',sourceId:'netease',trackId:'1001',title:'播放验证 (Original ver.)',artists:['验证音频'],album:'测试录音',aliases:[],durationMs:8000,metadataComplete:true}
 const SAME:SourceCandidate={...A,trackId:'1005',durationMs:8350}
@@ -71,7 +72,7 @@ export function seedP3Smoke(db:MusicDatabase,phase:string):void{
     const reference={collectionId:'p3-library',position:index+1};db.saveMatch(reference,db.originalSignature(reference)!,matchCandidates(db.getOriginal(reference)!,index<2?[candidate,SAME,B]:[candidate]))
   }
 }
-export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:PlayerController,cache:SongCache,media:MediaRegistry,phase:string):Promise<void>{
+export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:PlayerController,cache:SongCache,media:MediaRegistry,phase:string,background:BackgroundPlayback):Promise<void>{
   window.webContents.on('console-message',(_e,_level,msg)=>console.log('P3_CONSOLE:',msg))
   const root=path.dirname(app.getPath('userData')),report:Record<string,unknown>={at:new Date().toISOString(),phase,testProtocol:2,suite:'playback',scale:1,functional:false,packaged:app.isPackaged,network:'mocked GD and audio responses; no external calls',actualDecoder:'Chromium HTMLAudioElement; generated WAV PCM16/48kHz',audioOutputMuted:true,nativeDialogSimulated:true,schemaVersion:db.schemaVersion()}
   const originalDialog=dialog.showOpenDialog
@@ -99,6 +100,9 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
   try{
     await wait(()=>Boolean(window.webContents.mainFrame));await set({currentPage:'settings',volume:0,theme:'day'})
     if(phase==='resume'){
+      assert.equal(db.getPreferences().backgroundPlayback,true)
+      window.close();assert.equal(window.isDestroyed(),false);assert.equal(window.isVisible(),false);background.showWindow();assert.equal(window.isVisible(),true)
+      report.backgroundPreferenceAndTrayRestored=true
       assert.equal(cache.snapshot().usingDefault,false);assert.equal(db.getBinding({collectionId:'p3-library',position:1})!.slot,'alternative');assert.equal(player.snapshot().mode,'shuffle');assert(db.getHistory().some(item=>item.now.binding==='alternative'))
       await set({currentPage:'library'});await click('[data-shared-item]');await waitUI('Boolean(document.querySelector("[data-row-play=\\"1\\"]"))');assert.equal(db.getCollection('p3-library')!.tracks[0]!.title,B.title);report.selectedDisplayAndActionsRestored=true
       assert.equal(player.snapshot().phase,'idle');report.bindingModeCacheAndHistoryRestored=true
@@ -121,6 +125,14 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     await click('[data-track-position="2"]');const keyAllowed=await evaluate<boolean>('(()=>{const b=document.querySelector("[data-edit-version]");return b.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}))})()');assert.equal(keyAllowed,true)
     await click('[data-edit-version]');assert.equal(player.snapshot().media!.id,mediaId);assert.deepEqual(player.snapshot().queue.map(item=>item.id),queueIds);await click('[data-version-panel] [aria-label="关闭版本对照"]');report.versionKeyboardKeepsPlayback=true
     await click('[data-queue]');await click('[data-queue]');const after=await audio();assert(after.time>before.time);assert.equal(after.paused,false);report.actualAudioContinuousAcrossNavigationThemeAndPanel=true
+    await set({currentPage:'settings'});await click('[data-background-playback]');await wait(()=>db.getPreferences().backgroundPlayback)
+    const hiddenBefore=await audio(),hiddenMedia=player.snapshot().media!.id
+    window.close();assert.equal(window.isDestroyed(),false);assert.equal(window.isVisible(),false);await delay(400)
+    const hiddenAfter=await audio();assert(hiddenAfter.time>hiddenBefore.time);assert.equal(hiddenAfter.paused,false);assert.equal(player.snapshot().media!.id,hiddenMedia)
+    background.showWindow();assert.equal(window.isVisible(),true);report.backgroundAudioContinuesWithNativeTray=true
+    await command({type:'control',action:'pause'});window.close();assert.equal(window.isVisible(),false);assert.equal((await audio()).paused,true);background.showWindow()
+    await click('[data-background-playback]');assert.equal(db.getPreferences().backgroundPlayback,false);await click('[data-background-playback]')
+    await set({currentPage:'library'});report.backgroundToggleViaUI=true
     await command({type:'control',action:'pause'});const paused=(await audio()).time;await delay(300);assert(Math.abs((await audio()).time-paused)<0.08);report.pauseKeepsPosition=true
     await command({type:'seek',positionMs:4200});await delay(120);assert(Math.abs((await audio()).time-4.2)<0.3);report.actualSeekVerified=true
     await command({type:'control',action:'previous'});assert((await audio()).time<0.3);await command({type:'control',action:'resume'});await wait(()=>player.snapshot().phase==='playing')
@@ -143,6 +155,8 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     await command({type:'control',action:'pause'})
     assert.equal(db.getOriginal({collectionId:'p3-library',position:1})!.durationMs,synced.tracks[0]!.durationMs);assert.equal(db.getBinding({collectionId:'p3-library',position:1})!.slot,'alternative');report.rememberedAlternativeKeepsOriginal=true
     const alternative=db.getHistory().find(item=>item.now.binding==='alternative')!;assert(alternative);await evaluate('window.suMusic.playHistory('+JSON.stringify(alternative.id)+')');await wait(()=>player.snapshot().phase==='playing');assert.equal(player.snapshot().now!.candidate!.trackId,'1002');await command({type:'control',action:'pause'});report.historyReplaysActualAlternative=true
+    await set({currentPage:'history'});const historyCurrent=player.snapshot().currentId,historyMedia=player.snapshot().media!.id,historyCount=db.getHistory().length,historyQueue=player.snapshot().queue.length
+    await click('[data-history-next]');assert.equal(player.snapshot().queue.length,historyQueue+1);assert.equal(player.snapshot().currentId,historyCurrent);assert.equal(player.snapshot().media!.id,historyMedia);assert.equal(db.getHistory().length,historyCount);report.historyNextViaUIButton=true
     await set({currentPage:'local'});await click('[data-local-import]');assert.equal(db.getLocalTracks().length,1);await click('[data-local-item] .button');await wait(()=>player.snapshot().phase==='playing');assert.equal(player.snapshot().now!.source,'本地文件');assert.equal(player.snapshot().now!.format,'WAV');report.localFileDecodedViaNativeSelectionBridge=true
     await command({type:'control',action:'pause'});await command({type:'enqueue',target:{kind:'candidate',candidate:id(B)},placement:'next'});await click('[data-queue]');await capture('queue-controls');await click('[data-queue]')
     const local=db.getLocalTracks()[0]!;await openVersion(1)

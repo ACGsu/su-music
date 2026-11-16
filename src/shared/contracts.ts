@@ -10,7 +10,7 @@ export const CHANNELS = Object.freeze({
   searchHistory: 'su:search-history', addSearchHistory: 'su:add-search-history', removeSearchHistory: 'su:remove-search-history', clearSearchHistory: 'su:clear-search-history',
   pin: 'su:pin',
   player: 'su:player', playerCommand: 'su:player-command', mediaEvent: 'su:media-event', playerChanged: 'su:player-changed', playbackLibrary: 'su:playback-library',
-  importLocal: 'su:import-local', removeLocal: 'su:remove-local', clearHistory: 'su:clear-history', playHistory: 'su:play-history',
+  importLocal: 'su:import-local', removeLocal: 'su:remove-local', clearHistory: 'su:clear-history', playHistory: 'su:play-history', enqueueHistory: 'su:enqueue-history',
   chooseCache: 'su:choose-cache', resetCache: 'su:reset-cache', clearCache: 'su:clear-cache', checkUpdate: 'su:check-update', applyUpdate: 'su:apply-update'
 })
 export const PAGES = ['library', 'search', 'history', 'review', 'local', 'settings', 'now'] as const
@@ -25,8 +25,9 @@ export interface Preferences {
   librarySort: 'recent' | 'name' | 'count'
   currentPage: Page
   volume: number
+  backgroundPlayback: boolean
 }
-export const DEFAULT_PREFERENCES: Readonly<Preferences> = Object.freeze({ theme: 'system', density: 'comfortable', libraryView: 'grid', librarySort: 'recent', currentPage: 'library', volume: 70 })
+export const DEFAULT_PREFERENCES: Readonly<Preferences> = Object.freeze({ theme: 'system', density: 'comfortable', libraryView: 'grid', librarySort: 'recent', currentPage: 'library', volume: 70, backgroundPlayback: false })
 export interface Collection {
   id: string
   name: string
@@ -105,6 +106,7 @@ export interface DesktopAPI {
   removeLocal(id: string): Promise<Result<PlaybackLibrary>>
   clearHistory(): Promise<Result<PlaybackLibrary>>
   playHistory(id: string): Promise<Result<PlayerState>>
+  enqueueHistory(id: string): Promise<Result<PlayerState>>
   chooseCacheDirectory(): Promise<Result<AudioCacheState>>
   resetCacheDirectory(): Promise<Result<AudioCacheState>>
   clearAudioCache(): Promise<Result<AudioCacheState>>
@@ -124,10 +126,11 @@ export function validatePreferencesPatch(input: unknown): Partial<Preferences> {
     libraryView: value => ['grid', 'list'].includes(String(value)),
     librarySort: value => ['recent', 'name', 'count'].includes(String(value)),
     currentPage: value => PAGES.includes(value as Page),
-    volume: value => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100
+    volume: value => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100,
+    backgroundPlayback: value => typeof value === 'boolean'
   }
   for (const [key, value] of Object.entries(values)) {
-    if (!Object.hasOwn(rules, key) || (key !== 'volume' && typeof value !== 'string') || !rules[key]!(value)) throw new Error('INVALID_PREFERENCES')
+    if (!Object.hasOwn(rules, key) || (!['volume', 'backgroundPlayback'].includes(key) && typeof value !== 'string') || !rules[key]!(value)) throw new Error('INVALID_PREFERENCES')
   }
   if (Object.keys(values).length > Object.keys(rules).length) throw new Error('INVALID_PREFERENCES')
   return values as Partial<Preferences>

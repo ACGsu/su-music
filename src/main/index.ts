@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, nativeTheme, net, protocol, safeStorage, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, protocol, safeStorage, session, Tray } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -6,7 +6,7 @@ import { MusicDatabase } from './database.ts'
 import { CredentialVault } from './vault.ts'
 import { LocalLog } from './logging.ts'
 import { APP_URL, DEVELOPMENT_URL, PRODUCTION_CSP, assetPath, isTrustedPage, safeCode } from './security.ts'
-import { CHANNELS } from '../shared/contracts.ts'
+import { CHANNELS, validatePreferencesPatch } from '../shared/contracts.ts'
 import type { AppState, Result } from '../shared/contracts.ts'
 import { GdRequestBudget } from './music/budget.ts'
 import { GdNeteaseAdapter } from './music/gd.ts'
@@ -33,6 +33,7 @@ import {p3MockAudio,p3MockHttp,runP3Smoke,seedP3Smoke} from './playback-smoke.ts
 import {realAudioFetch,runRealAudio,seedRealControl} from './p3-real-audio.ts'
 import {p4MockFetch,p4MockHttp,P4Transport,runP4Smoke,seedP4Smoke} from './layout-smoke.ts'
 import { UpdateError, UpdateService, updateMessage, type Distribution } from './update.ts'
+import { BackgroundPlayback } from './background.ts'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'su-music', privileges: { standard: true, secure: true, supportFetchAPI: true, stream:true } }])
 app.setName('Su Music')
@@ -81,10 +82,17 @@ let account: AccountController | null = null
 let audioCache:SongCache|null=null,mediaRegistry:MediaRegistry|null=null,playbackSources:PlaybackSources|null=null,player:PlayerController|null=null
 let coverRefresh:Promise<void>|null=null,lastCoverSync:string|null=null,lastNeteaseCoverSync:string|null=null
 let updater:UpdateService|null=null
+let background:BackgroundPlayback|null=null
 let expectedURL = APP_URL
 const singleInstance=smoke||p2Live||app.requestSingleInstanceLock()
 if(!singleInstance)app.quit()
-app.on('second-instance',()=>{if(window&&!window.isDestroyed()){if(window.isMinimized())window.restore();window.focus()}})
+app.on('second-instance',()=>background?.showWindow())
+function requestQuit():void { background?.prepareQuit(); app.quit() }
+function shutdown():void {
+  background?.close()
+  player?.close();player=null;mediaRegistry?.close();mediaRegistry=null;audioCache?.close();audioCache=null;account?.close();account=null
+  log?.event('shutdown');log=null;budget?.close();budget=null;database?.close();database=null;music=null
+}
 function currentState(): AppState {
   if (!database || !vault) throw new Error('APPLICATION_NOT_READY')
   const preferences = database.getPreferences(), collections = database.getCollections().map(item=>({...item,coverUrl:covers?.url(item.id)??null}))
@@ -141,7 +149,7 @@ function registerIPC(target: BrowserWindow): void {
       return { ok: false, error: { code: 'IPC_SENDER_DENIED', message: '此请求无法执行。' } }
     }
     try { return { ok: true, value: await handler(...args) } }
-    catch (error) { log?.event('error', { code: safeCode(error) }); return { ok: false, error: { code: safeCode(error), message: error instanceof UpdateError?updateMessage(error):error instanceof PlayerError?playerMessage(error):accountMessage(error)??sourceMessage(error) } } }
+    catch (error) { log?.event('error', { code: safeCode(error) }); return { ok: false, error: { code: safeCode(error), message: safeCode(error)==='TRAY_UNAVAILABLE'?'系统托盘暂不可用，窗口将保持显示，请稍后重试。':error instanceof UpdateError?updateMessage(error):error instanceof PlayerError?playerMessage(error):accountMessage(error)??sourceMessage(error) } } }
   }
   const force = (args: unknown[]): boolean => {
     if (args.length < 1 || args.length > 2 || args[1] !== undefined && typeof args[1] !== 'boolean') throw new Error('INVALID_REQUEST')
@@ -149,7 +157,13 @@ function registerIPC(target: BrowserWindow): void {
   }
   const handlers = {
     [CHANNELS.state]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return currentState() },
-    [CHANNELS.preferences]: (...args: unknown[]) => { if (args.length !== 1) throw new Error('INVALID_REQUEST'); database!.setPreferences(args[0]); updateTheme(); log?.event('preferences_saved', { theme: database!.getPreferences().theme }); return currentState() },
+    [CHANNELS.preferences]: (...args: unknown[]) => {
+      if (args.length !== 1) throw new Error('INVALID_REQUEST')
+      const patch=validatePreferencesPatch(args[0]), previous=database!.getPreferences().backgroundPlayback
+      if(patch.backgroundPlayback!==undefined)background?.setEnabled(patch.backgroundPlayback)
+      try{database!.setPreferences(patch)}catch(error){background?.setEnabled(previous);throw error}
+      updateTheme();log?.event('preferences_saved', { theme: database!.getPreferences().theme });return currentState()
+    },
     [CHANNELS.collection]: (...args: unknown[]) => {
       if (args.length !== 1 || typeof args[0] !== 'string' || args[0].length > 128) throw new Error('INVALID_REQUEST')
       const result = database!.getCollection(args[0])
@@ -210,6 +224,7 @@ function registerIPC(target: BrowserWindow): void {
     [CHANNELS.removeLocal]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');database!.removeLocal(localId(args[0]));player!.libraryChanged();return playbackLibrary()},
     [CHANNELS.clearHistory]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');player!.clearHistory();return playbackLibrary()},
     [CHANNELS.playHistory]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');return player!.playHistory(localId(args[0]))},
+    [CHANNELS.enqueueHistory]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');return player!.enqueueHistory(localId(args[0]))},
     [CHANNELS.chooseCache]:async(...args:unknown[])=>{
       if(args.length)throw new Error('INVALID_REQUEST')
       const result=await dialog.showOpenDialog(target,{title:'选择歌曲缓存位置',properties:['openDirectory','createDirectory'],defaultPath:audioCache!.snapshot().directory})
@@ -219,7 +234,7 @@ function registerIPC(target: BrowserWindow): void {
     [CHANNELS.resetCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');try{return audioCache!.reset()}catch{throw new PlayerError('CACHE_DIRECTORY_UNWRITABLE')}},
     [CHANNELS.clearCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return audioCache!.clear(mediaRegistry!.protectedFiles())},
     [CHANNELS.checkUpdate]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return updater!.check()},
-    [CHANNELS.applyUpdate]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');const result=await updater!.stageAndLaunch();setTimeout(()=>app.quit(),250);return result}
+    [CHANNELS.applyUpdate]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');const result=await updater!.stageAndLaunch();setTimeout(requestQuit,250);return result}
   }
   for (const [channel, handler] of Object.entries(handlers)) { ipcMain.removeHandler(channel); ipcMain.handle(channel, protect(handler)) }
 }
@@ -244,13 +259,15 @@ async function createWindow(): Promise<void> {
   registerIPC(target)
   target.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   target.webContents.on('will-navigate', (event, url) => { if (!isTrustedPage(url, expectedURL)) event.preventDefault() })
-  target.on('close', () => { const bounds = target.getBounds(); database?.setSetting('window-bounds', { width: bounds.width, height: bounds.height }) })
+  target.on('close', event => { const bounds = target.getBounds(); database?.setSetting('window-bounds', { width: bounds.width, height: bounds.height });background?.handleClose(event) })
+  target.on('query-session-end',()=>background?.prepareQuit())
+  target.on('session-end',shutdown)
   target.on('closed', () => { window = null })
   if (development) await target.loadURL(expectedURL)
   else await target.loadURL(APP_URL)
   if (smoke) {
     target.showInactive()
-    try { if(p4Smoke)await runP4Smoke(target,database!,player!,phase,p4Scale);else if(p3RealAudio)await runRealAudio(target,database!,player!,audioCache!,mediaRegistry!);else if(p3Smoke)await runP3Smoke(target,database!,player!,audioCache!,mediaRegistry!,phase);else if(p2Smoke)await runP2Smoke(target,database!,account!,vault!,phase);else if (p1Smoke) await runP1Smoke(target,database!,phase); target.close() }
+    try { if(p4Smoke)await runP4Smoke(target,database!,player!,phase,p4Scale);else if(p3RealAudio)await runRealAudio(target,database!,player!,audioCache!,mediaRegistry!);else if(p3Smoke)await runP3Smoke(target,database!,player!,audioCache!,mediaRegistry!,phase,background!);else if(p2Smoke)await runP2Smoke(target,database!,account!,vault!,phase);else if (p1Smoke) await runP1Smoke(target,database!,phase); background?.prepareQuit();target.close() }
     catch (error) { console.error(JSON.stringify({ smokePassed: false, code: safeCode(error) })); app.exit(1) }
   } else target.show()
 }
@@ -268,7 +285,13 @@ app.whenReady().then(async () => {
   audioCache=new SongCache(database,app.getPath('userData'))
   mediaRegistry=new MediaRegistry(p3Smoke?p3MockAudio(path.dirname(app.getPath('userData'))):liveFetch,audioCache)
   playbackSources=new PlaybackSources(database,music,adapter,audioCache)
-  player=new PlayerController(database,playbackSources,mediaRegistry,value=>{if(window&&!window.isDestroyed())window.webContents.send(CHANNELS.playerChanged,value)})
+  player=new PlayerController(database,playbackSources,mediaRegistry,value=>{background?.refreshMenu(value);if(window&&!window.isDestroyed())window.webContents.send(CHANNELS.playerChanged,value)})
+  background=new BackgroundPlayback({
+    window:()=>window,player:()=>player?.snapshot()??null,
+    createTray:()=>{const icon=nativeImage.createFromPath(path.join(app.getAppPath(),'build','icon.ico'));if(icon.isEmpty())throw new Error('TRAY_UNAVAILABLE');return new Tray(icon)},
+    createMenu:items=>Menu.buildFromTemplate(items),command:action=>{player?.command({type:'control',action})},quit:requestQuit,
+    error:error=>{log?.event('error',{code:safeCode(error)});dialog.showErrorBox('播放未能完成',playerMessage(error))}
+  })
   database.onCatalogChanged(changes=>player?.catalogChanged(changes))
   if(p3Smoke)seedP3Smoke(database,phase)
   if(p4Smoke)seedP4Smoke(database,smokeRoot,phase)
@@ -307,10 +330,11 @@ app.whenReady().then(async () => {
     } catch { return new Response('Not found', { status: 404 }) }
   })
   nativeTheme.on('updated', updateTheme)
+  try{background.setEnabled(database.getPreferences().backgroundPlayback)}catch{if(!smoke)dialog.showErrorBox('系统托盘暂不可用','窗口将保持显示，请在设置中重试开启后台播放。')}
   await createWindow()
   if(!smoke)void account.restore()
   if(!smoke&&!p2Live)refreshCoverCache()
-  app.on('activate', () => { if (!window) void createWindow() })
+  app.on('activate', () => { if (!window) void createWindow();else background?.showWindow() })
 }).catch(error => {
   const code = safeCode(error)
   log?.event('error', { code })
@@ -319,4 +343,5 @@ app.whenReady().then(async () => {
   app.exit(1)
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
-app.on('will-quit', () => { player?.close();player=null;mediaRegistry?.close();mediaRegistry=null;audioCache?.close();audioCache=null;account?.close();account=null;log?.event('shutdown'); budget?.close(); budget = null; database?.close(); database = null; music = null })
+app.on('before-quit',()=>background?.prepareQuit())
+app.on('will-quit',shutdown)

@@ -5,7 +5,7 @@ import { GD_ATTRIBUTION } from '../../shared/music.ts'
 import Icon from './Icon.vue'
 import type { PlaybackTarget } from '../../shared/playback.ts'
 
-const props = defineProps<{ initialQuery?: string }>()
+const props = defineProps<{ request?: { id: number; query: string } | null }>()
 const emit = defineEmits<{
   original: [reference: TrackReference]
   candidate: [candidate: SourceCandidate]
@@ -14,6 +14,7 @@ const emit = defineEmits<{
 }>()
 
 const query = ref('')
+const submittedQuery = ref('')
 const busy = ref(false)
 const loadingMore = ref(false)
 const error = ref('')
@@ -33,11 +34,16 @@ function duration(value: number | null): string {
   return value === null ? '时长待补充' : Math.floor(value / 60000) + ':' + String(Math.floor(value / 1000) % 60).padStart(2, '0')
 }
 
-async function search(force = false): Promise<void> {
-  const trimmed = query.value.trim()
-  if (!trimmed || busy.value) return
+async function search(force = false, keyword = query.value): Promise<void> {
+  const trimmed = keyword.trim()
+  if (!trimmed) return
   const current = ++generation
+  submittedQuery.value = trimmed
   busy.value = true
+  loadingMore.value = false
+  searched.value = true
+  fromCache.value = false
+  metadataWarning.value = null
   error.value = ''
   page.value = 1
   results.value = []
@@ -48,7 +54,7 @@ async function search(force = false): Promise<void> {
     const result = await window.suMusic.searchOnline({ query: trimmed, page: 1, pageSize: 20, refresh: force })
     if (current !== generation) return
     if (result.ok) {
-      handlePageResults(result.value, true)
+      handlePageResults(result.value)
       void window.suMusic.addSearchHistory(trimmed)
     } else {
       error.value = result.error.message
@@ -62,7 +68,7 @@ async function search(force = false): Promise<void> {
 }
 
 async function loadNextPage(): Promise<void> {
-  const trimmed = query.value.trim()
+  const trimmed = submittedQuery.value
   if (!trimmed || !hasMore.value || busy.value || loadingMore.value) return
   const current = generation
   const nextPage = page.value + 1
@@ -74,7 +80,7 @@ async function loadNextPage(): Promise<void> {
     if (current !== generation) return
     if (result.ok) {
       page.value = nextPage
-      handlePageResults(result.value, false)
+      handlePageResults(result.value)
     } else {
       error.value = result.error.message
     }
@@ -85,7 +91,7 @@ async function loadNextPage(): Promise<void> {
   }
 }
 
-function handlePageResults(data: OnlineSearchResult, isFirstPage: boolean): void {
+function handlePageResults(data: OnlineSearchResult): void {
   fromCache.value = data.fromCache
   metadataWarning.value = data.metadataWarning
 
@@ -109,22 +115,16 @@ function handlePageResults(data: OnlineSearchResult, isFirstPage: boolean): void
 function retry(): void {
   error.value = ''
   if (results.value.length === 0) {
-    void search(false)
+    void search(false, submittedQuery.value)
   } else {
     void loadNextPage()
   }
 }
 
-function searchWithQuery(q: string): void {
-  query.value = q
-  void search(false)
-}
-
-defineExpose({ searchWithQuery })
-
-watch(() => props.initialQuery, (newVal) => {
-  if (newVal && newVal.trim() && newVal !== query.value) {
-    searchWithQuery(newVal.trim())
+watch(() => props.request?.id, () => {
+  if (props.request?.query.trim()) {
+    query.value = props.request.query.trim()
+    void search(false)
   }
 }, { immediate: true })
 
@@ -141,6 +141,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  generation++
   if (observer) {
     observer.disconnect()
     observer = null
@@ -165,10 +166,10 @@ watch(sentinel, (el) => {
         aria-label="歌曲搜索关键词"
         data-song-query
       />
-      <button class="button primary" :disabled="busy || !query.trim()" data-song-search>
+      <button class="button primary" :disabled="!query.trim()" data-song-search>
         {{ busy ? '正在搜索…' : '搜索' }}
       </button>
-      <button v-if="searched" class="button" :disabled="busy || !query.trim()" @click="search(true)">
+      <button v-if="searched" type="button" class="button" :disabled="!query.trim()" @click="search(true)">
         重新查询
       </button>
     </form>
@@ -190,10 +191,8 @@ watch(sentinel, (el) => {
         <div>
           <h3>{{ item.title }}</h3>
           <p>{{ item.artists.join('、') || '歌手资料缺失' }} · {{ duration(item.durationMs) }}</p>
-          <p class="source-note">
-            {{ item.album || '专辑资料缺失' }}
-            <span v-if="!item.metadataComplete"> · 资料待核对</span>
-          </p>
+          <p class="source-note album-text" :title="item.album || '专辑资料缺失'">{{ item.album || '专辑资料缺失' }}</p>
+          <p v-if="!item.metadataComplete" class="source-note">资料待核对</p>
         </div>
         <div class="playback-actions">
           <button class="button" @click="emit('play', { kind: 'candidate', candidate: { providerId: item.providerId, sourceId: item.sourceId, trackId: item.trackId } })">

@@ -18,8 +18,27 @@ function fixtures(root: string): { playlist: ImportedPlaylist; observations: P1O
 }
 export function p1MockHttp(root: string): PublicHttpClient {
   const { playlist } = fixtures(root)
+  const searchRows=new Map<number,{id:number;name:string;artists:{name:string}[];album:{name:string};duration:number}>()
+  let failSearch=true
   return new PublicHttpClient(async input => {
     const url = new URL(String(input))
+    if(url.hostname==='music-api.gdstudio.xyz'&&url.searchParams.get('types')==='search'){
+      const query=url.searchParams.get('name')??'',page=Number(url.searchParams.get('pages')??1)
+      if(!query.startsWith('回归搜索-'))throw new Error('P1_UNEXPECTED_SEARCH_QUERY')
+      if(query.includes('慢')||page===2)await delay(1600)
+      if(query.includes('失败')&&failSearch){failSearch=false;return new Response('{}')}
+      const count=query.includes('分页')?(page===1?20:2):1
+      const rows=Array.from({length:count},(_,index)=>{
+        const id=200000+searchRows.size,name=query+'-'+((page-1)*20+index+1),album='搜索专辑长名称与混合文本 AlbumName'.repeat(8)
+        searchRows.set(id,{id,name,artists:[{name:'回归歌手'}],album:{name:album},duration:6000})
+        return{id,name,source:'netease',artist:['回归歌手'],album}
+      })
+      return new Response(JSON.stringify(rows))
+    }
+    if(url.hostname==='music.163.com'&&url.pathname==='/api/song/detail/'){
+      const ids=JSON.parse(url.searchParams.get('ids')??'[]') as number[]
+      return new Response(JSON.stringify({code:200,songs:ids.map(id=>searchRows.get(id)).filter(Boolean)}))
+    }
     if (url.hostname === 't1.kugou.com') return new Response(null,{status:302,headers:{location:'http://wwwapi.kugou.com/share/zlist.html?global_collection_id='+encodeURIComponent(playlist.sourceKey)}})
     if (url.hostname === 'wwwapi.kugou.com') return new Response('var dataFromSmarty = '+JSON.stringify(playlist.tracks.map(track=>track.raw))+';',{headers:{'content-type':'text/html'}})
     if (url.hostname === 'm.kugou.com') return new Response(JSON.stringify(JSON.parse(fs.readFileSync(path.join(root,'cover-metadata.json'),'utf8'))),{headers:{'content-type':'application/json'}})
@@ -97,7 +116,7 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
       const item=await gridPresentation()
       assert.equal(item.fit,'contain');assert(item.leftDifference<1&&item.rightDifference<1)
       assert(item.imageWidth<=item.frameWidth&&item.imageHeight<=item.frameHeight&&item.dockTop>=item.frameBottom-1)
-      assert(item.nameFits)
+      assert(await evaluate<boolean>('(()=>{const n=document.querySelector("[data-shared-item] .collection-name"),s=getComputedStyle(n);return s.whiteSpace==="nowrap"&&s.textOverflow==="ellipsis"&&s.overflow==="hidden"})()'))
     }
     await checkPresentation()
     await capture('day-share-grid')
@@ -147,6 +166,31 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
     await click('[data-online-result] .playback-actions .button:last-child');await wait('document.querySelector("[data-version-panel]")?.textContent.includes("Carefree")')
     assert.equal(await evaluate<boolean>('Boolean(document.querySelector("[data-version-panel] [role=status]"))'),false)
     report.onlineSearchAndCandidatePanelVerified=true
+    const topSearch=async(query:string):Promise<void>=>{
+      await click('[data-search-shortcut]');await input('[data-search-flyout-input]',query)
+      await evaluate('document.querySelector("[data-search-flyout-input]").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))');await delay(80)
+    }
+    const resultTitle=():Promise<string>=>evaluate('document.querySelector("[data-online-result] h3")?.textContent??""')
+    await topSearch('回归搜索-A');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-A-1"')
+    await input('[data-song-query]','回归搜索-B');await click('[data-song-search]');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-B-1"')
+    await click('[data-nav="history"]');await click('[data-nav="search"]')
+    assert.equal(await evaluate<string>('document.querySelector("[data-song-query]").value'),'');assert.equal(await resultTitle(),'')
+    assert.equal(await evaluate<number>('document.querySelector(".content").scrollTop'),0)
+    await topSearch('回归搜索-A');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-A-1"')
+    await input('[data-song-query]','回归搜索-B');await click('[data-song-search]');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-B-1"')
+    await topSearch('回归搜索-A');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-A-1"')
+    await topSearch('回归搜索-慢竞争');await topSearch('回归搜索-B');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-B-1"');await delay(1800);assert.equal(await resultTitle(),'回归搜索-B-1')
+    await topSearch('回归搜索-慢离页');await click('[data-nav="local"]');await click('[data-nav="search"]');await delay(1800);assert.equal(await resultTitle(),'')
+    await topSearch('回归搜索-分页');await wait('document.querySelectorAll("[data-online-result]").length===20')
+    await input('[data-song-query]','回归搜索-B');await evaluate('document.querySelector(".content").scrollTop=document.querySelector(".content").scrollHeight')
+    await wait('document.querySelectorAll("[data-online-result]").length===22')
+    assert.equal(await evaluate<string>('document.querySelector("[data-online-result]:nth-child(22) h3").textContent'),'回归搜索-分页-22')
+    await topSearch('回归搜索-分页竞争');await wait('document.querySelectorAll("[data-online-result]").length===20')
+    await evaluate('document.querySelector(".content").scrollTop=document.querySelector(".content").scrollHeight');await delay(200)
+    await topSearch('回归搜索-A');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-A-1"');await delay(1800);assert.equal(await evaluate<number>('document.querySelectorAll("[data-online-result]").length'),1)
+    await topSearch('回归搜索-失败');await wait('Boolean(document.querySelector(".source-search [role=alert]"))');await click('[data-song-search]');await wait('document.querySelector("[data-online-result] h3")?.textContent==="回归搜索-失败-1"')
+    assert(await evaluate<boolean>('(()=>{const e=document.querySelector("[data-online-result] .album-text"),s=getComputedStyle(e);return s.webkitLineClamp==="2"&&e.getBoundingClientRect().height<=parseFloat(s.lineHeight)*2+1})()'))
+    assert((await db.getSearchHistory()).includes('回归搜索-A'));report.searchNavigationAndRequestRacesVerified=true
     await click('[data-nav="library"]');await wait('Boolean(document.querySelector("[data-shared-item]"))');await click('[data-shared-item]');await wait('document.querySelectorAll(".track-table tbody tr").length === 22')
     await input('[data-detail-filter-input]','スパークル');await wait('document.querySelectorAll(".track-table tbody tr").length === 2')
     report.librarySearchPositionsVerified=true

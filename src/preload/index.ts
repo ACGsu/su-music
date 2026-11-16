@@ -36,6 +36,7 @@ const api: DesktopAPI = Object.freeze({
   removeLocal: (id: string) => ipcRenderer.invoke(CHANNELS.removeLocal, id),
   clearHistory: () => ipcRenderer.invoke(CHANNELS.clearHistory),
   playHistory: (id: string) => ipcRenderer.invoke(CHANNELS.playHistory, id),
+  enqueueHistory: (id: string) => ipcRenderer.invoke(CHANNELS.enqueueHistory, id),
   chooseCacheDirectory: () => ipcRenderer.invoke(CHANNELS.chooseCache),
   resetCacheDirectory: () => ipcRenderer.invoke(CHANNELS.resetCache),
   clearAudioCache: () => ipcRenderer.invoke(CHANNELS.clearCache),

@@ -15,7 +15,7 @@ export async function verifyDesktopSecurity(window: BrowserWindow, root: string)
     'connectNetease','refreshNetease','cancelNeteaseSync','logoutNetease','switchAccount',
     'getSearchHistory','addSearchHistory','removeSearchHistory','clearSearchHistory',
     'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','importLocal','removeLocal',
-    'clearHistory','playHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','checkUpdate','applyUpdate','onPlayerChanged'
+    'clearHistory','playHistory','enqueueHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','checkUpdate','applyUpdate','onPlayerChanged'
   ].sort())
   for (const command of [
     'window.suMusic.setPreferences({filename:"C:/outside-workspace",token:"synthetic"})',
