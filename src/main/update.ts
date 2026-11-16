@@ -185,6 +185,15 @@ try {
 }
 `
 
+export interface UpdateOptions {
+  currentVersion: string
+  distribution: Distribution
+  userData: string
+  executable: string
+  portableExecutable?: string | null
+  fetcher?: Fetcher
+}
+
 export class UpdateService {
   private selected: SelectedUpdate | null = null
   private readonly options: {
@@ -195,7 +204,13 @@ export class UpdateService {
     portableExecutable: string | null
     fetcher: Fetcher
   }
-  constructor(options: UpdateService['options']) { this.options = options }
+  constructor(options: UpdateOptions) {
+    this.options = {
+      ...options,
+      portableExecutable: options.portableExecutable ?? null,
+      fetcher: options.fetcher ?? fetch
+    }
+  }
 
   async check(): Promise<UpdateInfo> {
     if (this.options.distribution === 'development') throw new UpdateError('UPDATE_DEVELOPMENT_BUILD')

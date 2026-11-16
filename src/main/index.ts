@@ -256,7 +256,7 @@ async function createWindow(): Promise<void> {
 }
 app.whenReady().then(async () => {
   if(!singleInstance)return
-  updater=new UpdateService({currentVersion:app.getVersion(),distribution,userData:app.getPath('userData'),executable:process.execPath,portableExecutable,fetcher:(input,init)=>net.fetch(input,init)})
+  updater=new UpdateService({currentVersion:app.getVersion(),distribution,userData:app.getPath('userData'),executable:process.execPath,portableExecutable,fetcher:(input,init)=>fetch(input,init)})
   log = new LocalLog(path.join(app.getPath('userData'), 'logs'))
   database = new MusicDatabase(path.join(app.getPath('userData'), 'library.sqlite'))
   budget = new GdRequestBudget(path.join(p3RealAudio?normalUserData:app.getPath('userData'), 'gd-budget.sqlite'))
