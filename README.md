@@ -104,6 +104,8 @@ Windows x64 音乐播放器，当前版本 `0.4.2-rc.2`。支持标准版酷狗�
 
 “账号与设置 → 软件更新”可手动检查 [ACGsu/su-music](https://github.com/ACGsu/su-music) 的 GitHub Release。应用不会后台检查或自动下载；发现更高版本后，由用户点击“一键更新”。安装版只使用对应 NSIS 安装包，Portable 版只替换对应 Portable EXE，下载完成前会核对随 Release 提供的 SHA-256 文件。预发布版本会继续接收预发布及正式更新，正式版本只接收正式更新。
 
+下载和校验完成后，应用会先确认独立更新助手已经启动，再退出、应用更新并重新启动。助手启动失败或未能确认就绪时，应用保留当前窗口并提示错误；Portable 更新失败记录位于 EXE 旁的 `Data/updates/update-error.txt`。
+
 ## 开发
 
 开始修改前先阅读 [docs/AGENT.md](docs/AGENT.md)，其中列明各脚本的用途。开发文档集中在 `docs/`，许可与第三方声明集中在 `licenses/`；根目录保留 README 和工具链直接使用的配置文件。

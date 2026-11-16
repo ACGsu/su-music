@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 
 const REPOSITORY = 'ACGsu/su-music'
@@ -8,6 +8,7 @@ const API_URL = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=20
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const MAX_METADATA_BYTES = 2 * 1024 * 1024
 const MAX_PACKAGE_BYTES = 300 * 1024 * 1024
+const HELPER_START_TIMEOUT_MS = 20_000
 
 export type Distribution = 'installed' | 'portable' | 'development'
 export interface UpdateInfo {
@@ -161,11 +162,22 @@ const helperSource = `param(
   [Parameter(Mandatory=$true)][string]$Package,
   [Parameter(Mandatory=$true)][string]$Target,
   [Parameter(Mandatory=$true)][int]$WaitFor,
-  [Parameter(Mandatory=$true)][string]$Log
+  [Parameter(Mandatory=$true)][string]$Log,
+  [Parameter(Mandatory=$true)][string]$Ready,
+  [Parameter(Mandatory=$true)][string]$Proceed
 )
 $ErrorActionPreference='Stop'
+$appExited=$false
 try {
-  Wait-Process -Id $WaitFor -ErrorAction SilentlyContinue
+  $parent=Get-Process -Id $WaitFor -ErrorAction SilentlyContinue
+  Set-Content -LiteralPath $Ready -Value $PID -Encoding ASCII
+  $deadline=[DateTime]::UtcNow.AddSeconds(30)
+  while (-not (Test-Path -LiteralPath $Proceed)) {
+    if ([DateTime]::UtcNow -ge $deadline -or ($parent -and $parent.HasExited)) { throw 'UPDATE_LAUNCH_NOT_CONFIRMED' }
+    Start-Sleep -Milliseconds 100
+  }
+  if ($parent -and -not $parent.WaitForExit(120000)) { throw 'UPDATE_EXIT_TIMEOUT' }
+  $appExited=$true
   if ($Mode -eq 'installer') {
     $process=Start-Process -FilePath $Package -ArgumentList '/S' -PassThru -Wait
     if ($process.ExitCode -ne 0) { throw "INSTALLER_EXIT_$($process.ExitCode)" }
@@ -177,13 +189,57 @@ try {
     }
     if (-not $replaced) { throw 'PORTABLE_REPLACE_FAILED' }
   }
-  if (Test-Path -LiteralPath $Target) { Start-Process -FilePath $Target }
+  if (Test-Path -LiteralPath $Target) { Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) }
 } catch {
   Set-Content -LiteralPath $Log -Value $_.Exception.Message -Encoding UTF8
-  if (Test-Path -LiteralPath $Target) { Start-Process -FilePath $Target }
+  if ($appExited -and (Test-Path -LiteralPath $Target)) {
+    try { Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) } catch {}
+  }
   exit 1
+} finally {
+  Remove-Item -LiteralPath $Ready,$Proceed -Force -ErrorAction SilentlyContinue
 }
 `
+
+function powershellLiteral(value: string): string {
+  return "'" + value.replaceAll("'", "''") + "'"
+}
+
+function launchHelper(powershell: string, args: string[], directory: string, ready: string): Promise<void> {
+  // Direct detached PowerShell exits without executing its script on Windows.
+  // Start-Process creates a hidden helper that survives the application's exit.
+  const argumentLine = args.map(value => '"' + value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"').join(' ')
+  const command = `$ErrorActionPreference='Stop'; Start-Process -FilePath ${powershellLiteral(powershell)} -ArgumentList ${powershellLiteral(argumentLine)} -WorkingDirectory ${powershellLiteral(directory)} -WindowStyle Hidden`
+  return new Promise<void>((resolve, reject) => {
+    let bootstrapped = false, settled = false
+    const finish = (failed: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout); clearInterval(poll)
+      if (failed) {
+        if (child.exitCode === null) child.kill()
+        reject(new UpdateError('UPDATE_LAUNCH_FAILED'))
+      } else resolve()
+    }
+    const checkReady = (): void => {
+      if (!bootstrapped) return
+      try {
+        if (/^[1-9]\d*\s*$/.test(fs.readFileSync(ready, 'ascii'))) finish(false)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') finish(true)
+      }
+    }
+    const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')],
+      { cwd: directory, stdio: 'ignore', windowsHide: true })
+    const timeout = setTimeout(() => finish(true), HELPER_START_TIMEOUT_MS)
+    const poll = setInterval(checkReady, 100)
+    child.once('error', () => finish(true))
+    child.once('exit', code => {
+      if (code !== 0) { finish(true); return }
+      bootstrapped = true; checkReady()
+    })
+  })
+}
 
 export interface UpdateOptions {
   currentVersion: string
@@ -286,13 +342,17 @@ export class UpdateService {
     fs.writeFileSync(helper, helperSource, { encoding: 'utf8', mode: 0o600 }); fs.rmSync(log, { force: true })
     const target = selected.info.distribution === 'portable' ? this.options.portableExecutable : this.options.executable
     if (!target) throw new UpdateError('UPDATE_LAUNCH_FAILED')
+    const launchId = randomUUID(), ready = path.join(directory, `update-${launchId}.ready`), proceed = path.join(directory, `update-${launchId}.proceed`)
     const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     try {
-      const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
-        '-Mode', selected.info.distribution === 'portable' ? 'portable' : 'installer', '-Package', destination, '-Target', target, '-WaitFor', String(process.pid), '-Log', log],
-      { detached: true, stdio: 'ignore', windowsHide: true })
-      child.unref()
-    } catch { throw new UpdateError('UPDATE_LAUNCH_FAILED') }
+      await launchHelper(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', helper,
+        '-Mode', selected.info.distribution === 'portable' ? 'portable' : 'installer', '-Package', destination, '-Target', target, '-WaitFor', String(process.pid), '-Log', log,
+        '-Ready', ready, '-Proceed', proceed], directory, ready)
+      fs.writeFileSync(proceed, 'apply', { encoding: 'ascii', flag: 'wx', mode: 0o600 })
+    } catch {
+      fs.rmSync(ready, { force: true }); fs.rmSync(proceed, { force: true })
+      throw new UpdateError('UPDATE_LAUNCH_FAILED')
+    }
     return selected.info
   }
 

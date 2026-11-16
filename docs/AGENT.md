@@ -42,6 +42,7 @@
 - 凭据只在主进程，以 Windows `safeStorage` 加密；正常资料目录为 `%APPDATA%\Su Music\`。不要把真实会话、二维码、账号快照、缓存、音频或日志提交 Git，也不要为清理／测试删除真实用户资料。
 - electron-builder Portable 运行时使用 `PORTABLE_EXECUTABLE_DIR`／`PORTABLE_EXECUTABLE_FILE`，资料写入 EXE 旁的 `Data/`；不要使用指向临时解压目录的 `process.execPath` 计算便携资料位置。安装版仍使用 `%APPDATA%\Su Music\`。
 - 软件更新只由设置页手动触发。主进程固定访问 `ACGsu/su-music` 的 GitHub Release，按当前安装版／Portable 形态选择精确命名的资产，并在执行前核对同名 `.sha256`；渲染器不能提交 URL、文件名或命令。正式版忽略预发布，预发布版可以继续接收预发布和正式版。
+- 更新助手由短时 PowerShell 引导进程通过 `Start-Process -WindowStyle Hidden` 启动，工作目录固定为资料目录下的 `updates/`；不要恢复直接 `spawn(powershell, ..., { detached: true })`，它在当前 Windows 环境会退出而不执行脚本。主进程必须在 20 秒内确认助手写入本次随机命名的就绪文件，再写入执行确认并返回给退出流程；未确认的助手不能替换程序。助手等待主进程退出后才更新，重新启动时使用目标 EXE 所在目录，并清理本次握手文件。
 - `contextIsolation=true`、`sandbox=true`、`nodeIntegration=false`。只通过固定的 preload 接口通信；主进程核对发送 frame、受信任页面及 DTO 字段。不要引入任意 URL／路径／命令执行接口。
 - Vue 响应式对象不能直接穿过 contextBridge。播放请求使用 `validatePlayerCommand` 构造固定字段的普通对象；回归必须实际点击版本按钮，不能只直调主进程绕过界面。
 - GD 搜索、元数据补充、播放地址解析共享持久化预算 **45 次／5 分钟**。实时脚本也共用正常资料目录的 `gd-budget.sqlite`，不能另开预算规避限流。
