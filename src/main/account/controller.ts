@@ -476,18 +476,31 @@ export class AccountController {
           tracks: ReturnType<GdNeteaseAdapter['fetchPlaylistTracks']> extends Promise<infer T> ? T : never
         }> = []
 
+        const warnings: string[] = []
+
         for (const [order, p] of initial.playlists.entries()) {
           if (controller.signal.aborted || this.stopped) throw new AccountError('ACCOUNT_CANCELLED')
 
           let tracks = this.db.getNeteasePlaylistCache(p.id, p.updateTime, p.trackCount)
-          if (!tracks || tracks.length !== p.trackCount) {
-            tracks = await this.adapter!.fetchPlaylistTracks(p.id, controller.signal)
-            if (controller.signal.aborted || this.stopped) throw new AccountError('ACCOUNT_CANCELLED')
-            if (tracks.length !== p.trackCount) {
-              throw new AccountError('DIRECTORY_TRACK_COUNT_MISMATCH')
+          if (!tracks) {
+            try {
+              tracks = await this.adapter!.fetchPlaylistTracks(p.id, controller.signal)
+              if (controller.signal.aborted || this.stopped) throw new AccountError('ACCOUNT_CANCELLED')
+              this.db.setNeteasePlaylistCache(p.id, p.updateTime, p.trackCount, tracks)
+            } catch {
+              if (controller.signal.aborted || this.stopped) throw new AccountError('ACCOUNT_CANCELLED')
+              tracks = this.db.getNeteasePlaylistCache(p.id, p.updateTime, p.trackCount) ?? []
+              warnings.push(`歌单「${p.name}」获取失败，已保留现有数据`)
             }
-            this.db.setNeteasePlaylistCache(p.id, p.updateTime, p.trackCount, tracks)
           }
+
+          if (tracks.length !== p.trackCount) {
+            warnings.push(`歌单「${p.name}」标记 ${p.trackCount} 首，实际同步 ${tracks.length} 首`)
+          }
+
+          const normalizedTracks = tracks.map((track, idx) =>
+            track.position === idx + 1 ? track : { ...track, position: idx + 1 }
+          )
 
           collections.push({
             sourceKey: p.id,
@@ -495,11 +508,11 @@ export class AccountController {
             kind: p.kind,
             subtype: null,
             order,
-            reportedCount: tracks.length,
+            reportedCount: normalizedTracks.length,
             coverUrl: p.coverUrl,
             updateTime: p.updateTime,
             raw: p.raw,
-            tracks
+            tracks: normalizedTracks
           })
 
           this.state.netease.sync.completedCollections = collections.length
@@ -529,7 +542,7 @@ export class AccountController {
           phase: 'completed',
           positionCount: result.positionCount,
           lastSuccessAt: library.at,
-          error: null,
+          error: warnings.length ? warnings.slice(0, 3).join('；') + (warnings.length > 3 ? ` 等共 ${warnings.length} 项差异。` : '。') : null,
           added: result.added,
           removed: result.removed
         }

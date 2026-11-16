@@ -151,6 +151,7 @@ export function parseNeteasePlaylistTracks(input: unknown): (Track & { songId: s
       const pl = record(body.playlist)
       if (pl && Array.isArray(pl.tracks)) list = pl.tracks
       else if (Array.isArray(body.tracks)) list = body.tracks
+      else if (Array.isArray(body.songs)) list = body.songs
       else if (Array.isArray(body.data)) list = body.data
     }
   }
@@ -179,6 +180,19 @@ export function parseNeteasePlaylistTracks(input: unknown): (Track & { songId: s
     })
   }
   return tracks
+}
+
+export function extractNeteaseTrackIds(input: unknown): string[] {
+  const body = record(input)
+  const pl = record(body?.playlist) ?? body
+  const list = Array.isArray(pl?.trackIds) ? pl.trackIds : null
+  if (!list) return []
+  const ids: string[] = []
+  for (const item of list) {
+    const id = identifier(record(item)?.id ?? item)
+    if (id) ids.push(id)
+  }
+  return ids
 }
 
 export class GdNeteaseAdapter {
@@ -319,11 +333,43 @@ export class GdNeteaseAdapter {
     return parseNeteaseUserlist(raw, uid)
   }
 
-  async fetchPlaylistTracks(id: string, _signal?: AbortSignal): Promise<(Track & { songId: string; raw: unknown })[]> {
+  async fetchPlaylistTracks(id: string, signal?: AbortSignal): Promise<(Track & { songId: string; raw: unknown })[]> {
     if (!/^[1-9]\d{0,17}$/.test(id)) throw new SourceError('INVALID_REQUEST')
     const address = new URL('https://music-api.gdstudio.xyz/api.php')
     address.search = new URLSearchParams({ types: 'playlist', source: 'netease', id }).toString()
     const raw = await this.json(address.href, 'gd', undefined, 32 * 1024 * 1024)
-    return parseNeteasePlaylistTracks(raw)
+    const tracks = parseNeteasePlaylistTracks(raw)
+    const allTrackIds = extractNeteaseTrackIds(raw)
+    if (allTrackIds.length > tracks.length) {
+      const existingIds = new Set(tracks.map(t => t.songId))
+      const missingIds = allTrackIds.filter(tid => !existingIds.has(tid))
+      const chunkSize = 200
+      for (let i = 0; i < missingIds.length; i += chunkSize) {
+        if (signal?.aborted) throw new SourceError('SOURCE_TIMEOUT')
+        const chunk = missingIds.slice(i, i + chunkSize)
+        const metadata = new URL('https://music.163.com/api/song/detail/')
+        metadata.search = new URLSearchParams({
+          id: chunk[0]!,
+          ids: JSON.stringify(chunk.map(v => Number(v)))
+        }).toString()
+        try {
+          const songData = await this.http.json(metadata.href, 'netease')
+          const extraTracks = parseNeteasePlaylistTracks(songData)
+          for (const t of extraTracks) {
+            if (!existingIds.has(t.songId)) {
+              existingIds.add(t.songId)
+              tracks.push({
+                ...t,
+                position: tracks.length + 1
+              })
+            }
+          }
+        } catch {
+          // Gracefully degrade: if a chunk fails to fetch, keep already retrieved tracks
+          break
+        }
+      }
+    }
+    return tracks
   }
 }

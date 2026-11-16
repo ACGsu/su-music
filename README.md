@@ -1,14 +1,14 @@
 # Su Music
 
-Windows x64 音乐播放器，当前版本 `0.4.0-rc.2`。支持标准版酷狗扫码登录与网易云公开 UID 连接、单账号视图切换、只读歌单同步、公开分享导入（支持酷狗与网易云歌单）、在线网易云搜索与搜索历史、歌单即时过滤、内嵌版本选择、播放队列、本地音频和自选歌曲缓存目录。
+Windows x64 音乐播放器，当前版本 `0.4.1-rc.2`。支持标准版酷狗扫码登录与网易云公开 UID 连接、单账号视图切换、只读歌单同步、公开分享导入（支持酷狗与网易云歌单）、在线网易云搜索与搜索历史、歌单即时过滤、内嵌版本选择、播放队列、本地音频和自选歌曲缓存目录。
 
 本文同时包含使用说明和开发入口。实际覆盖与限制见 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)，第三方来源见 [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md)，源码维护约束见 [docs/AGENT.md](docs/AGENT.md)。
 
 ## 安装与启动
 
-运行 `release/0.4.0-rc.2/Su-Music-0.4.0-rc.2-x64-setup.exe`，选择安装目录，再启动 Su Music。安装面向当前 Windows 用户。升级前关闭正在运行的 Su Music；使用同一 Windows 用户可继续读取本机曲库、外观、版本选择和缓存目录设置。
+运行 `release/0.4.1-rc.2/Su-Music-0.4.1-rc.2-x64-setup.exe`，选择安装目录，再启动 Su Music。安装面向当前 Windows 用户。升级前关闭正在运行的 Su Music；使用同一 Windows 用户可继续读取本机曲库、外观、版本选择和缓存目录设置。
 
-免安装使用可运行 `release/0.4.0-rc.2/Su-Music-0.4.0-rc.2-x64-portable.exe`。首次运行会在 Portable EXE 旁创建 `Data/`，移动或备份时需要将 EXE 与 `Data/` 一起复制。也可直接运行 `release/0.4.0-rc.2/win-unpacked/Su Music.exe`，该目录版仍使用 `%APPDATA%\Su Music\`。
+免安装使用可运行 `release/0.4.1-rc.2/Su-Music-0.4.1-rc.2-x64-portable.exe`。首次运行会在 Portable EXE 旁创建 `Data/`，移动或备份时需要将 EXE 与 `Data/` 一起复制。也可直接运行 `release/0.4.1-rc.2/win-unpacked/Su Music.exe`，该目录版仍使用 `%APPDATA%\Su Music\`。
 
 首次启动是空曲库。已有账号曲库保存在本机，启动后可先浏览。发行目录提供本说明、`docs/`、`licenses/` 及校验文件；本版本在当前 Windows 11 x64 环境验收，其他系统范围见 `docs/KNOWN_LIMITATIONS.md`。
 
@@ -123,21 +123,21 @@ node scripts/audit-package.mjs
 
 所有测试结果和工具缓存集中到被 Git 忽略的 `.tmp/`。桌面测试成功后自动删除本轮截图、模拟数据库和音频，只保留各运行模式的一份最新摘要；失败时保留本轮资料供诊断。加 `--keep-artifacts` 可保留成功资料。单元测试自动删除自身资料；真实网络验证仍需单独运行。
 
-发行目录取自 `package.json` 的版本号，当前为 `release/0.4.0-rc.2/`。同一版本重新打包更新该目录，版本升级创建新版本目录，已有版本保留。一次打包同时生成 NSIS 安装包和 Portable EXE，但不自动发布或上传；README、开发说明、限制和许可按源码中的目录结构随包提供，审计为两种交付文件分别生成 SHA-256。隔离安装验证及其他开发命令见 `docs/AGENT.md`。
+发行目录取自 `package.json` 的版本号，当前为 `release/0.4.1-rc.2/`。同一版本重新打包更新该目录，版本升级创建新版本目录，已有版本保留。一次打包同时生成 NSIS 安装包和 Portable EXE，但不自动发布或上传；README、开发说明、限制和许可按源码中的目录结构随包提供，审计为两种交付文件分别生成 SHA-256。隔离安装验证及其他开发命令见 `docs/AGENT.md`。
 
 ```text
 release/
-├─ 0.4.0-rc.1/
-│  ├─ Su-Music-0.4.0-rc.1-x64-setup.exe
-│  ├─ Su-Music-0.4.0-rc.1-x64-setup.exe.sha256
-│  ├─ Su-Music-0.4.0-rc.1-x64-portable.exe
-│  ├─ Su-Music-0.4.0-rc.1-x64-portable.exe.sha256
+├─ 0.4.0-rc.2/
+│  ├─ Su-Music-0.4.0-rc.2-x64-setup.exe
+│  ├─ Su-Music-0.4.0-rc.2-x64-setup.exe.sha256
+│  ├─ Su-Music-0.4.0-rc.2-x64-portable.exe
+│  ├─ Su-Music-0.4.0-rc.2-x64-portable.exe.sha256
 │  └─ ...
-└─ 0.4.0-rc.2/
-   ├─ Su-Music-0.4.0-rc.2-x64-setup.exe
-   ├─ Su-Music-0.4.0-rc.2-x64-setup.exe.sha256
-   ├─ Su-Music-0.4.0-rc.2-x64-portable.exe
-   ├─ Su-Music-0.4.0-rc.2-x64-portable.exe.sha256
+└─ 0.4.1-rc.2/
+   ├─ Su-Music-0.4.1-rc.2-x64-setup.exe
+   ├─ Su-Music-0.4.1-rc.2-x64-setup.exe.sha256
+   ├─ Su-Music-0.4.1-rc.2-x64-portable.exe
+   ├─ Su-Music-0.4.1-rc.2-x64-portable.exe.sha256
    ├─ win-unpacked/
    │  └─ Su Music.exe
    ├─ README.md
