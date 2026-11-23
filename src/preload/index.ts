@@ -32,6 +32,7 @@ const api: DesktopAPI = Object.freeze({
   playerCommand: (command: PlayerCommand) => ipcRenderer.invoke(CHANNELS.playerCommand, command),
   reportMediaEvent: (event: MediaEvent) => ipcRenderer.invoke(CHANNELS.mediaEvent, event),
   getPlaybackLibrary: () => ipcRenderer.invoke(CHANNELS.playbackLibrary),
+  locateCurrentTrack: (collectionId: string) => ipcRenderer.invoke(CHANNELS.locateCurrentTrack, collectionId),
   importLocal: (reference?: TrackReference) => ipcRenderer.invoke(CHANNELS.importLocal, reference),
   removeLocal: (id: string) => ipcRenderer.invoke(CHANNELS.removeLocal, id),
   clearHistory: () => ipcRenderer.invoke(CHANNELS.clearHistory),
@@ -40,6 +41,7 @@ const api: DesktopAPI = Object.freeze({
   chooseCacheDirectory: () => ipcRenderer.invoke(CHANNELS.chooseCache),
   resetCacheDirectory: () => ipcRenderer.invoke(CHANNELS.resetCache),
   clearAudioCache: () => ipcRenderer.invoke(CHANNELS.clearCache),
+  setAudioCacheLimit: (limitBytes: number) => ipcRenderer.invoke(CHANNELS.setCacheLimit, limitBytes),
   checkUpdate: () => ipcRenderer.invoke(CHANNELS.checkUpdate),
   applyUpdate: () => ipcRenderer.invoke(CHANNELS.applyUpdate),
   onPlayerChanged: (callback: (state: PlayerState) => void) => {

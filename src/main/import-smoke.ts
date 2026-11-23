@@ -202,6 +202,7 @@ export async function runP1Smoke(window: BrowserWindow, db: MusicDatabase, phase
     await click('[data-theme-choice="night"]')
     await evaluate('(()=>{const input=document.querySelector("[data-volume]");input.value="87";input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}));})()')
     await wait('document.querySelector("[data-volume]").value==="87"')
+    await wait('window.suMusic.getState().then(result=>result.ok&&result.value.preferences.volume===87)')
     assert.equal(db.getPreferences().volume,87);report.preferenceControlsVerified=true
     await set({theme:'night',density:'compact',libraryView:'list',currentPage:'settings'})
     report.passed=true

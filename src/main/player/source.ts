@@ -1,4 +1,4 @@
-import type {MusicDatabase} from '../database.ts'
+import type {MusicDatabase,PlaybackIdentity} from '../database.ts'
 import type {MusicSourceService} from '../music/service.ts'
 import type {GdNeteaseAdapter,PlaybackAttempts} from '../music/gd.ts'
 import type {CandidateId,SourceCandidate,TrackReference} from '../../shared/music.ts'
@@ -29,6 +29,23 @@ export class PlaybackSources {
   }
   rememberSnapshot(candidate:SourceCandidate):void{this.db.setSourceCache('candidate',candidateKey(candidate),candidate,86400000)}
   localMatches(now:PlaybackNow):boolean{const local=now.localId?this.db.getLocal(now.localId):null;return Boolean(local&&!local.missing&&(!now.localStamp||now.localStamp===local.size+':'+local.mtime))}
+  identity(target:PlaybackTarget,now:PlaybackNow|null,override?:SourceCandidate):PlaybackIdentity{
+    if(now?.localId)return{local:{id:now.localId,stamp:now.localStamp}}
+    const original=target.kind==='original'?this.db.getOriginal(target.reference):null
+    const saved=target.kind==='original'?this.db.getBinding(target.reference):null
+    const candidate=now?.candidate??override??(target.kind==='candidate'?target.candidate:saved?.target.kind==='candidate'?saved.candidate??saved.target.candidate:null)
+    if(candidate){
+      const same=original&&('title'in candidate)&&compareCandidate(original,candidate as SourceCandidate).decision==='matched'
+      return{candidateKey:candidateKey(candidate),...(same&&target.kind==='original'?{originalKey:this.db.originalPlaybackKey(target.reference)}:{})}
+    }
+    const localId=target.kind==='local'?target.localId:saved?.target.kind==='local'?saved.target.localId:null
+    if(localId){const local=this.db.getLocal(localId);return{local:{id:localId,...(local?{stamp:local.size+':'+local.mtime}:{})}}}
+    if(target.kind==='original'&&original){
+      const match=this.db.getMatch(target.reference,this.db.originalSignature(target.reference)!)
+      return{...(match?.automaticCandidate?{candidateKey:match.automaticCandidate}:{}),originalKey:this.db.originalPlaybackKey(target.reference)}
+    }
+    return{}
+  }
   describe(target:PlaybackTarget):Omit<QueueEntry,'id'|'target'>{
     if(target.kind==='original'){
       const presentation=this.db.getTrackPresentation(target.reference)

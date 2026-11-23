@@ -27,7 +27,7 @@ import {PlaybackSources} from './player/source.ts'
 import {PlayerController} from './player/controller.ts'
 import {PlayerError,playerMessage} from './player/errors.ts'
 import {registerLocalFile} from './player/local.ts'
-import {validateMediaEvent,validatePlayerCommand} from '../shared/playback.ts'
+import {validateAudioCacheLimit,validateMediaEvent,validatePlayerCommand} from '../shared/playback.ts'
 import type {PlaybackLibrary} from '../shared/playback.ts'
 import {p3MockAudio,p3MockHttp,runP3Smoke,seedP3Smoke} from './playback-smoke.ts'
 import {realAudioFetch,runRealAudio,seedRealControl} from './p3-real-audio.ts'
@@ -211,6 +211,7 @@ function registerIPC(target: BrowserWindow): void {
     [CHANNELS.playerCommand]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');return player!.command(validatePlayerCommand(args[0]))},
     [CHANNELS.mediaEvent]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');player!.event(validateMediaEvent(args[0]));return null},
     [CHANNELS.playbackLibrary]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return playbackLibrary()},
+    [CHANNELS.locateCurrentTrack]:(...args:unknown[])=>{if(args.length!==1)throw new Error('INVALID_REQUEST');return player!.locateCurrentTrack(validateTrackReference({collectionId:args[0],position:1}).collectionId)},
     [CHANNELS.importLocal]:async(...args:unknown[])=>{
       if(args.length>1)throw new Error('INVALID_REQUEST')
       const reference=args[0]===undefined?undefined:validateTrackReference(args[0]),signature=reference?database!.originalSignature(reference):null
@@ -233,6 +234,12 @@ function registerIPC(target: BrowserWindow): void {
     },
     [CHANNELS.resetCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');try{return audioCache!.reset()}catch{throw new PlayerError('CACHE_DIRECTORY_UNWRITABLE')}},
     [CHANNELS.clearCache]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return audioCache!.clear(mediaRegistry!.protectedFiles())},
+    [CHANNELS.setCacheLimit]:(...args:unknown[])=>{
+      if(args.length!==1)throw new Error('INVALID_REQUEST')
+      let limit:number
+      try{limit=validateAudioCacheLimit(args[0])}catch{throw new PlayerError('INVALID_CACHE_LIMIT')}
+      try{return audioCache!.setLimit(limit)}catch{throw new PlayerError('CACHE_LIMIT_SAVE_FAILED')}
+    },
     [CHANNELS.checkUpdate]:(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');return updater!.check()},
     [CHANNELS.applyUpdate]:async(...args:unknown[])=>{if(args.length)throw new Error('INVALID_REQUEST');const result=await updater!.stageAndLaunch();setTimeout(requestQuit,250);return result}
   }

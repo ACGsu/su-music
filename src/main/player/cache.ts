@@ -2,10 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {createHash,randomUUID} from 'node:crypto'
 import type {AudioCacheState} from '../../shared/playback.ts'
+import {AUDIO_CACHE_DEFAULT_BYTES,AUDIO_CACHE_MIN_BYTES,validateAudioCacheLimit} from '../../shared/playback.ts'
 import type {MusicDatabase} from '../database.ts'
 import {inspectAudioHeader} from '../music/audio.ts'
 
-const LIMIT=2*1024*1024*1024,MAX_TRACK=512*1024*1024
+const MAX_TRACK=AUDIO_CACHE_MIN_BYTES
 const MARKER='.su-music-cache.json',MARKER_VALUE='su-music-audio-cache-v1'
 export interface CacheMetadata {identity:string;format:string|null;bitrate:number|null;qualityCode:number|null;durationMs:number|null;verifiedBitrate?:number|null}
 export interface CachedAudio extends CacheMetadata {key:string;filename:string;size:number;mtime:number;mime:string;lastAccess:number}
@@ -16,16 +17,20 @@ export class SongCache {
   private root:string
   private readonly defaultRoot:string
   private warning:string|null=null
+  private cleanupWarning:string|null=null
   private writers=new Set<CacheWriter>()
-  private pins=new Set<string>()
+  private pins=new Map<string,number>()
   private db:MusicDatabase
   private limit:number
-  constructor(db:MusicDatabase,userData:string,limit=LIMIT){
-    this.db=db;this.limit=limit
+  constructor(db:MusicDatabase,userData:string,limit?:number){
+    this.db=db
+    let savedLimit=AUDIO_CACHE_DEFAULT_BYTES
+    try{savedLimit=validateAudioCacheLimit(db.getSetting<unknown>('audio-cache-limit-bytes',AUDIO_CACHE_DEFAULT_BYTES))}catch{}
+    this.limit=limit??savedLimit
     this.defaultRoot=path.resolve(userData,'Audio Cache')
     const saved=db.getSetting<unknown>('audio-cache-directory',null)
     this.root=typeof saved==='string'&&path.isAbsolute(saved)?path.resolve(saved):this.defaultRoot
-    try{this.prepare(this.root);this.cleanPartial(this.root)}catch{this.warning='缓存目录暂不可写，播放仍可使用在线资源。'}
+    try{this.prepare(this.root);this.cleanPartial(this.root);this.prune(this.root)}catch{this.warning='缓存目录暂不可写，播放仍可使用在线资源。'}
   }
   private prepare(directory:string):void{
     fs.mkdirSync(directory,{recursive:true})
@@ -44,10 +49,19 @@ export class SongCache {
     const selected=fs.realpathSync(parent),root=this.safeRoot(selected)?selected:path.join(selected,'Su Music Cache')
     this.prepare(root);const next=fs.realpathSync(root)
     this.db.setSetting('audio-cache-directory',next);this.root=next;this.warning=null;this.cleanPartial(this.root)
+    this.prune(this.root)
     return this.snapshot()
   }
   reset():AudioCacheState{
     this.prepare(this.defaultRoot);this.db.setSetting('audio-cache-directory',null);this.root=this.defaultRoot;this.warning=null
+    this.cleanPartial(this.root);this.prune(this.root)
+    return this.snapshot()
+  }
+  setLimit(limitBytes:number):AudioCacheState{
+    const next=validateAudioCacheLimit(limitBytes)
+    this.db.setSetting('audio-cache-limit-bytes',next)
+    this.limit=next
+    this.prune(this.root)
     return this.snapshot()
   }
   private safeRoot(root:string):boolean{
@@ -63,7 +77,9 @@ export class SongCache {
   private entries(root=this.root):CachedAudio[]{
     if(!this.safeRoot(root))return[]
     const result:CachedAudio[]=[]
-    for(const name of fs.readdirSync(root).slice(0,10000))if(/^[a-f0-9]{64}\.json$/.test(name)){
+    let names:string[]
+    try{names=fs.readdirSync(root)}catch{if(root===this.root)this.warning='缓存目录暂不可读取，请选择其他位置。';return[]}
+    for(const name of names)if(/^[a-f0-9]{64}\.json$/.test(name)){
       try{
         const sidecar=path.join(root,name),sideStat=fs.lstatSync(sidecar)
         if(!sideStat.isFile()||sideStat.isSymbolicLink()||sideStat.size>16384)continue
@@ -87,30 +103,50 @@ export class SongCache {
   }
   snapshot():AudioCacheState{
     const entries=this.entries()
-    return{directory:this.root,usingDefault:path.resolve(this.root)===this.defaultRoot,bytes:entries.reduce((sum,item)=>sum+item.size,0),tracks:entries.length,limitBytes:this.limit,warning:this.warning}
+    return{directory:this.root,usingDefault:path.resolve(this.root)===this.defaultRoot,bytes:entries.reduce((sum,item)=>sum+item.size,0),tracks:entries.length,limitBytes:this.limit,warning:this.warning??this.cleanupWarning}
   }
   createWriter(metadata:CacheMetadata,total:number,mime:string):CacheWriter|null{
     if(!Number.isSafeInteger(total)||total<=0||total>MAX_TRACK||total>this.limit)return null
     try{
       if(!this.safeRoot(this.root))return null
       const writer=new CacheWriter(this.root,metadata,total,mime,(record)=>{
-        this.saveMetadata(record);this.warning=null;this.prune(path.dirname(record.filename),record.filename)
+        this.saveMetadata(record)
+        if(path.dirname(record.filename)===this.root){this.warning=null;this.prune(this.root,record.filename)}
       },()=>{this.warning='歌曲缓存未能写入，播放仍可继续。'},writer=>this.writers.delete(writer))
       this.writers.add(writer);return writer
     }catch{this.warning='歌曲缓存未能写入，播放仍可继续。';return null}
   }
-  private removeEntry(record:CachedAudio):void{
-    if(this.pins.has(record.filename))return
-    for(const file of [record.filename,path.join(path.dirname(record.filename),record.key+'.json')]){
-      try{if(!fs.lstatSync(file).isSymbolicLink())fs.unlinkSync(file)}catch{}
+  private removeEntry(record:CachedAudio):boolean{
+    if(this.pins.has(record.filename))return false
+    try{
+      const stat=fs.lstatSync(record.filename)
+      if(!stat.isFile()||stat.isSymbolicLink())return false
+      fs.unlinkSync(record.filename)
+    }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')return false}
+    try{
+      const sidecar=path.join(path.dirname(record.filename),record.key+'.json')
+      const stat=fs.lstatSync(sidecar)
+      if(stat.isFile()&&!stat.isSymbolicLink())fs.unlinkSync(sidecar)
+    }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')this.warning='部分缓存文件未能清理，请稍后重试。'}
+    return true
+  }
+  private prune(root:string,keep?:string):void{
+    if(!this.safeRoot(root)){if(root===this.root)this.cleanupWarning='缓存目录暂不可用，容量设置已保存，请选择其他位置。';return}
+    const entries=this.entries(root).sort((a,b)=>Number(a.filename===keep)-Number(b.filename===keep)||a.lastAccess-b.lastAccess)
+    let total=entries.reduce((sum,item)=>sum+item.size,0),failed=false
+    for(const row of entries)if(total>this.limit&&!this.pins.has(row.filename)){
+      if(this.removeEntry(row))total-=row.size
+      else failed=true
     }
+    if(root===this.root)this.cleanupWarning=failed?'部分缓存未能清理，实际占用可能超出容量上限，请稍后重试。':total>this.limit?'正在使用的缓存暂时超出容量上限，播放资源释放后会继续清理。':null
   }
-  private prune(root:string,keep:string):void{
-    const entries=this.entries(root).sort((a,b)=>a.lastAccess-b.lastAccess);let total=entries.reduce((sum,item)=>sum+item.size,0)
-    for(const row of entries)if(total>this.limit&&row.filename!==keep&&!this.pins.has(row.filename)){this.removeEntry(row);total-=row.size}
+  pin(filename:string):void{this.pins.set(filename,(this.pins.get(filename)??0)+1)}
+  unpin(filename:string):void{
+    const count=this.pins.get(filename)??0
+    if(count>1)this.pins.set(filename,count-1)
+    else this.pins.delete(filename)
+    if(path.dirname(filename)===this.root)this.prune(this.root)
   }
-  pin(filename:string):void{this.pins.add(filename)}
-  unpin(filename:string):void{this.pins.delete(filename)}
   invalidate(identity:string):void{for(const row of this.entries())if(row.identity===identity)this.removeEntry(row)}
   clear(protectedFiles:string[]=[]):AudioCacheState{
     if(!this.safeRoot(this.root)){this.warning='缓存目录暂不可用，请选择其他位置。';return this.snapshot()}
@@ -121,6 +157,7 @@ export class SongCache {
       if(!keep.has(path.resolve(audio))&&!this.pins.has(audio))try{if(fs.lstatSync(file).isFile()&&!fs.lstatSync(file).isSymbolicLink())fs.unlinkSync(file)}catch{}
     }
     this.cleanPartial(this.root)
+    this.cleanupWarning=null
     this.warning=keep.size?'当前正在播放的缓存会保留，其余歌曲缓存已清理。':null
     return this.snapshot()
   }

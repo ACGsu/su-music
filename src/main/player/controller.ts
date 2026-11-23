@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto'
 import type {MusicDatabase} from '../database.ts'
 import type {CatalogChange} from '../database.ts'
 import type {SourceCandidate,TrackReference} from '../../shared/music.ts'
-import type {PlayerState,PlayerCommand,MediaEvent,QueueEntry,PlaybackTarget,HistoryEntry,PlaybackNow} from '../../shared/playback.ts'
+import type {PlayerState,PlayerCommand,MediaEvent,QueueEntry,PlaybackTarget,HistoryEntry,PlaybackNow,CurrentTrackLocation} from '../../shared/playback.ts'
 import type {PlaybackAttempts} from '../music/gd.ts'
 import type {PlaybackSources} from './source.ts'
 import type {MediaRegistry} from './media.ts'
@@ -203,6 +203,16 @@ export class PlayerController {
   }
   private clock():number{return(this.options.now??Date.now)()}
   snapshot():PlayerState{return structuredClone(this.state)}
+  locateCurrentTrack(collectionId:string):CurrentTrackLocation{
+    const current=this.current()
+    if(!current||this.db.currentAccountKey()!==this.accountKey)return{currentId:null,position:null}
+    const reference=current.target.kind==='original'?current.target.reference:null
+    if(reference?.collectionId===collectionId&&this.signatures.get(current.id)===this.db.originalSignature(reference)&&this.db.getOriginal(reference))return{currentId:current.id,position:reference.position}
+    const now=this.state.now??this.historyContext.get(current.id)??null
+    const identity=this.sources.identity(current.target,now,this.overrides.get(current.id))
+    const preferred=now?.reference?.collectionId===collectionId?now.reference.position:undefined
+    return{currentId:current.id,position:this.db.findPlaybackPosition(collectionId,identity,preferred)}
+  }
   private emit():void{this.changed(this.snapshot())}
   private clearTimer():void{if(this.timer)clearTimeout(this.timer);this.timer=null}
   private release():void{this.clearTimer();if(this.state.media)this.media.revoke(this.state.media.id);this.state.media=null}

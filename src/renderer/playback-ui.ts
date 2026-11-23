@@ -10,3 +10,8 @@ export function qualityText(now:PlaybackNow|null|undefined):string{
 }
 export function phaseText(phase:PlayerState['phase']|undefined):string{return({idle:'未选择歌曲',resolving:'正在解析',loading:'正在缓冲',playing:'正在播放',paused:'已暂停',waiting_retry:'等待额度恢复',needs_review:'需要选版本',error:'暂不可用',ended:'播放已结束'} as const)[phase??'idle']}
 export function bindingText(now:PlaybackNow|null|undefined):string{return now?.binding==='alternative'?'已选替代版':now?.binding==='local'?'关联的本地文件':now?.binding==='same'?'收藏版本候选':'直接播放'}
+export function centerListItem(container:HTMLElement,item:HTMLElement):void{
+  const bounds=container.getBoundingClientRect(),row=item.getBoundingClientRect()
+  const top=container.scrollTop+row.top-bounds.top-container.clientTop+(row.height-container.clientHeight)/2
+  container.scrollTo({top:Math.max(0,Math.min(container.scrollHeight-container.clientHeight,top)),behavior:'auto'})
+}

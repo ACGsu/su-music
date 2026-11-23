@@ -34,7 +34,7 @@ function syntheticLibrary():AccountLibrary{
     const kind=index<2?'default' as const:index<82?'created' as const:'favorite' as const
     const count=index===0?0:index===1?5000:12
     const tracks=Array.from({length:count},(_,offset)=>{
-      const position=offset+1,special=index===1&&position<=5,title=special&&position!==4?PLAYABLE.title:position===4&&index===1?BAD.title:`${LONG} · ${index+1}-${position}`
+      const position=offset+1,special=index===1&&(position<=5||position===2500),title=special&&position!==4?PLAYABLE.title:position===4&&index===1?BAD.title:`${LONG} · ${index+1}-${position}`
       const value=hash(index+':'+(index===1&&position===2?1:position))
       return{position,title,filename:'P4 验证歌手 - '+title+'.mp3',artist:'P4 验证歌手',album:PLAYABLE.album,durationMs:PLAYABLE.durationMs,version:null,hash:value,raw:{hash:value,songname:title,name:'P4 验证歌手 - '+title+'.mp3',timelen:PLAYABLE.durationMs,singerinfo:[{name:'P4 验证歌手'}],albuminfo:{name:PLAYABLE.album}}}
     })
@@ -70,7 +70,7 @@ export function seedP4Smoke(db:MusicDatabase,root:string,phase:string):void{
   if(phase==='first')db.replaceAccountLibrary(library)
   for(const candidate of [PLAYABLE,ALTERNATIVE,BAD])db.setSourceCache('candidate',candidateKey(candidate),candidate,86400000)
   const favorites=db.getCollections().find(item=>item.positionCount===5000)!
-  for(const position of [1,2,3,4,5]){
+  for(const position of [1,2,3,4,5,2500]){
     const reference={collectionId:favorites.id,position},original=db.getOriginal(reference)!,candidate=position===4?BAD:PLAYABLE
     db.saveMatch(reference,db.originalSignature(reference)!,matchCandidates(original,[candidate,ALTERNATIVE]))
   }
@@ -118,6 +118,7 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     for(let attempt=0;attempt<3;attempt++)try{const screenshot=await window.webContents.capturePage();assert(!screenshot.isEmpty(),'P4_EMPTY_SCREENSHOT');fs.writeFileSync(path.join(root,name+'.png'),screenshot.toPNG());return}catch(error){if(attempt===2)throw error;await delay(400)}
   }
   const layout=async(label:string):Promise<void>=>{
+    assert(await evaluate<boolean>('(()=>{const nav=document.querySelector("[data-playlist-navigation]");if(!nav)return true;const frame=document.querySelector(".content-frame").getBoundingClientRect(),content=document.querySelector(".content").getBoundingClientRect(),buttons=Array.from(nav.querySelectorAll("button")),boxes=buttons.map(e=>e.getBoundingClientRect());const usable=buttons.every((e,i)=>{const r=boxes[i],hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);return r.left>=frame.left&&r.right<=frame.right&&r.top>=frame.top&&r.bottom<=frame.bottom&&e.contains(hit)});const clear=Array.from(document.querySelectorAll(".state-cell button")).every(e=>{const r=e.getBoundingClientRect(),clip=e.closest(".track-table-wrap").getBoundingClientRect(),left=Math.max(r.left,clip.left),right=Math.min(r.right,clip.right);if(right<=left||r.bottom<=content.top||r.top>=content.bottom)return true;return r.left>=clip.left-1&&r.right<=clip.right+1&&boxes.every(b=>right<=b.left||left>=b.right||r.bottom<=b.top||r.top>=b.bottom)});return usable&&clear})()'),'P4_PLAYLIST_NAVIGATION '+label)
     const value=await evaluate<{width:number;height:number;dpr:number;outerOverflow:boolean;contentOverflow:boolean;footerVisible:boolean;accent:string;yellowText:boolean}>(`(()=>{
       const content=document.querySelector('.content'),footer=document.querySelector('.player'),r=footer.getBoundingClientRect();
       const controls=Array.from(footer.querySelectorAll('button,input')).filter(e=>!e.disabled);
@@ -196,11 +197,55 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     }
     await click('[data-row-play="1"]');await wait('document.querySelector("[data-audio]")?.currentTime>0.15&&!document.querySelector("[data-audio]")?.paused')
     const token=player.snapshot().media!.id
+    assert(await evaluate<boolean>('!document.querySelector(".position-cell button")&&getComputedStyle(document.querySelector(".playing-track .position-cell span")).visibility!=="hidden"'))
+    if(functional){
+      const ids=player.snapshot().queue.map(item=>item.id),current=player.snapshot().currentId,before=await evaluate<number>('document.querySelector("[data-audio]").currentTime')
+      await click('[data-row-play="1"]');await wait('document.querySelector("[data-audio]").paused')
+      assert.equal(player.snapshot().media!.id,token);assert.equal(player.snapshot().currentId,current);assert.deepEqual(player.snapshot().queue.map(item=>item.id),ids)
+      const paused=await evaluate<number>('document.querySelector("[data-audio]").currentTime');assert(paused>=before-0.05)
+      assert.equal(await evaluate<boolean>('Boolean(document.querySelector(".inline-action-row"))'),false)
+      await click('[data-row-play="1"]');await wait('!document.querySelector("[data-audio]").paused')
+      assert.equal(player.snapshot().media!.id,token);assert((await evaluate<number>('document.querySelector("[data-audio]").currentTime'))>=paused-0.05)
+      report.rowPlaybackTogglePreservesPositionAndQueue=true
+      await click('[data-row-play="2500"]');await wait('document.querySelector(".playing-track")?.dataset.trackPosition==="2500"&&!document.querySelector("[data-audio]").paused')
+      await evaluate('document.querySelector(".content").scrollTop=0');await click('[data-queue]')
+      await wait('(()=>{const list=document.querySelector(".queue-list"),row=document.querySelector(".queue-current");if(!list||!row)return false;const a=list.getBoundingClientRect(),b=row.getBoundingClientRect();return list.scrollTop>0&&Math.abs((b.top+b.bottom)/2-(a.top+list.clientTop+list.clientHeight/2))<3})()')
+      assert.equal(await evaluate<number>('document.querySelector(".content").scrollTop'),0)
+      await evaluate('document.querySelector(".queue-list").scrollTop=0');await delay(250)
+      assert.equal(await evaluate<number>('document.querySelector(".queue-list").scrollTop'),0)
+      await click('[data-queue]');await click('[data-queue]');await wait('document.querySelector(".queue-list")?.scrollTop>0');await key('Escape')
+      report.queueOpensCenteredAndRetainsManualScroll=true
+      await input('[data-detail-filter-input]','5000');await wait('document.querySelectorAll(".track-table tbody tr[data-track-position]").length===1')
+      await click('[data-locate-current]');await wait('document.querySelector("[data-detail-filter-input]").value===""&&document.querySelector(".located-track")?.dataset.trackPosition==="2500"')
+      assert(await evaluate<boolean>('(()=>{const a=document.querySelector(".content").getBoundingClientRect(),c=document.querySelector(".content"),b=document.querySelector(".located-track").getBoundingClientRect();return Math.abs((b.top+b.bottom)/2-(a.top+c.clientTop+c.clientHeight/2))<3})()'))
+      await layout('located-middle-track');await capture('located-middle-track');await click('[data-scroll-top]');await wait('document.querySelector(".content").scrollTop===0')
+      report.playlistNavigationClearsHiddenFilterAndCenters=true
+    }
     await evaluate('window.suMusic.playerCommand({type:"control",action:"pause"})');await delay(100)
     for(const percent of [0,50,100]){
       await set({volume:percent})
       await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value=String(Number(e.max)*'+percent+'/100);e.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(80)
       await layout('range-percent-'+percent)
+    }
+    if(functional){
+      await set({volume:47});await evaluate('document.activeElement?.blur();document.body.focus()')
+      await key('Up');await wait('document.querySelector("[data-volume]").value==="52"');assert.equal(db.getPreferences().volume,52)
+      assert(Math.abs(await evaluate<number>('document.querySelector("[data-audio]").volume')-0.52)<0.0001)
+      await key('Down');await wait('document.querySelector("[data-volume]").value==="47"')
+      await input('[data-detail-filter-input]','5000');await evaluate('document.querySelector("[data-detail-filter-input]").focus()');await key('Up');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'47');await input('[data-detail-filter-input]','')
+      await evaluate('document.querySelector("[data-volume]").focus()');await key('Up');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'52')
+      await key('Down');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'47')
+      await evaluate('document.querySelector("[data-seek]").focus()');await key('Up');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'47')
+      await evaluate('document.activeElement.blur()');await key('Up',['control']);await key('Down',['shift']);assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'47')
+      await set({volume:98});await key('Up');await key('Up');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'100')
+      await set({volume:2});await key('Down');await key('Down');assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'0')
+      await set({volume:40})
+      await evaluate('for(let i=0;i<12;i++)document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowUp",code:"ArrowUp",repeat:i>0,bubbles:true,cancelable:true}));void window.suMusic.setPreferences({theme:"night"})')
+      await wait('document.querySelector("[data-volume]").value==="100"')
+      await wait('window.suMusic.getState().then(result=>result.ok&&result.value.preferences.volume===100)')
+      assert.equal(db.getPreferences().volume,100)
+      assert.equal(await evaluate<string>('document.querySelector("[data-volume]").value'),'100')
+      report.volumeArrowStepsBoundsFocusAndLatestSave=true
     }
     await set({volume:0});await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value="0";e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));})()');await evaluate('window.suMusic.playerCommand({type:"control",action:"resume"})');await delay(80)
     report.rangeFillEndpointsAndMidpointVerified=true

@@ -14,14 +14,17 @@ export async function verifyDesktopSecurity(window: BrowserWindow, root: string)
     'matchTrack','checkResource','startLogin','cancelLogin','logout','syncAccount','cancelSync',
     'connectNetease','refreshNetease','cancelNeteaseSync','logoutNetease','switchAccount',
     'getSearchHistory','addSearchHistory','removeSearchHistory','clearSearchHistory',
-    'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','importLocal','removeLocal',
-    'clearHistory','playHistory','enqueueHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','checkUpdate','applyUpdate','onPlayerChanged'
+    'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','locateCurrentTrack','importLocal','removeLocal',
+    'clearHistory','playHistory','enqueueHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','setAudioCacheLimit','checkUpdate','applyUpdate','onPlayerChanged'
   ].sort())
   for (const command of [
     'window.suMusic.setPreferences({filename:"C:/outside-workspace",token:"synthetic"})',
     'window.suMusic.matchTrack({collectionId:"one",position:1,token:"extra"})',
     'window.suMusic.checkResource({providerId:"gd",sourceId:"kugou",trackId:"100"})',
-    'window.suMusic.playerCommand({type:"play",target:{kind:"file",filename:"C:/private"}})'
+    'window.suMusic.playerCommand({type:"play",target:{kind:"file",filename:"C:/private"}})',
+    'window.suMusic.locateCurrentTrack({collectionId:"one",filename:"C:/private"})',
+    'window.suMusic.setAudioCacheLimit(511*1024*1024)',
+    'window.suMusic.setAudioCacheLimit(21*1024*1024*1024)'
   ]) assert.equal((await evaluate<{ok: boolean}>(command)).ok, false)
   const marker = path.join(root, 'outside-renderer-marker.txt')
   fs.writeFileSync(marker, 'synthetic-private-file')

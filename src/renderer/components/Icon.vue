@@ -19,6 +19,8 @@ const paths: Record<string, string> = {
   shuffle:'M3 5h3l12 14h3M17 15l4 4-4 3M3 19h3l4-5M13 10l5-5h3M17 2l4 3-4 3',
   'repeat-one':'M5 6h13l3 3M21 4v5h-5M19 18H6l-3-3M3 20v-5h5M11 10l2-1v7',
   up:'M6 15l6-6 6 6',
+  top:'M4 4h16M6 14l6-6 6 6M12 8v13',
+  locate:'M12 2v4M12 18v4M2 12h4M18 12h4M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10',
   down:'M6 9l6 6 6-6',
   previous: 'M5 5v14M19 5L7 12l12 7z',
   next: 'M19 5v14M5 5l12 7-12 7z',

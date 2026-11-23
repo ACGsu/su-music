@@ -8,7 +8,8 @@ const messages:Record<string,string>={
   MEDIA_NOT_AUDIO:'音源返回的内容无法播放。',MEDIA_RANGE_INVALID:'音频范围读取失败。',LOCAL_FILE_CHANGED:'本地文件缺失或已改变，请重新关联。',
   MEDIA_DECODE_ERROR:'这个音频暂时无法解码。',MEDIA_PLAY_BLOCKED:'播放未能开始，请点击播放重试。',MEDIA_STALLED:'音频长时间没有继续加载。',
   MEDIA_DURATION_MISMATCH:'资源时长与所选版本不一致，请对照版本。',QUEUE_LIMIT:'队列最多保留 20,000 个曲目位置。',
-  CACHE_DIRECTORY_INVALID:'缓存目录无法使用，请选择其他位置。',CACHE_DIRECTORY_UNWRITABLE:'缓存目录暂不可写，请选择其他位置。'
+  CACHE_DIRECTORY_INVALID:'缓存目录无法使用，请选择其他位置。',CACHE_DIRECTORY_UNWRITABLE:'缓存目录暂不可写，请选择其他位置。',
+  INVALID_CACHE_LIMIT:'缓存容量须为 512–20480 MB 的整数。',CACHE_LIMIT_SAVE_FAILED:'缓存容量未能保存，请重试。'
 }
 export function playerMessage(error:unknown):string{
   if(error instanceof SourceError)return sourceMessage(error)

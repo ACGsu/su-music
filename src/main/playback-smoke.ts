@@ -104,14 +104,18 @@ export async function runP3Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
       window.close();assert.equal(window.isDestroyed(),false);assert.equal(window.isVisible(),false);background.showWindow();assert.equal(window.isVisible(),true)
       report.backgroundPreferenceAndTrayRestored=true
       assert.equal(cache.snapshot().usingDefault,false);assert.equal(db.getBinding({collectionId:'p3-library',position:1})!.slot,'alternative');assert.equal(player.snapshot().mode,'shuffle');assert(db.getHistory().some(item=>item.now.binding==='alternative'))
+      assert.equal(cache.snapshot().limitBytes,1536*1024*1024);report.cacheCapacityRestored=true
       await set({currentPage:'library'});await click('[data-shared-item]');await waitUI('Boolean(document.querySelector("[data-row-play=\\"1\\"]"))');assert.equal(db.getCollection('p3-library')!.tracks[0]!.title,B.title);report.selectedDisplayAndActionsRestored=true
       assert.equal(player.snapshot().phase,'idle');report.bindingModeCacheAndHistoryRestored=true
-      await command({type:'play',target:{kind:'original',reference:{collectionId:'p3-library',position:1}}});await wait(()=>player.snapshot().phase==='playing');assert.equal(player.snapshot().now!.candidate!.trackId,'1002');assert.equal(player.snapshot().now!.binding,'alternative');report.rememberedActualVersionDecoded=true
+      await click('[data-row-play="1"]');await wait(()=>player.snapshot().phase==='playing');assert.equal(player.snapshot().now!.candidate!.trackId,'1002');assert.equal(player.snapshot().now!.binding,'alternative');report.rememberedActualVersionDecoded=true
       await command({type:'control',action:'pause'});await capture('resume-alternative');report.passed=true;return
     }
     assert.equal((await evaluate<{ok:boolean}>('window.suMusic.chooseCacheDirectory("C:/arbitrary")')).ok,true)
     assert.equal(cache.snapshot().directory,path.join(root,'chosen-cache','Su Music Cache'));report.noRendererPathsAccepted=true
     await click('[data-cache-choose]');assert.equal(cache.snapshot().directory,path.join(root,'chosen-cache','Su Music Cache'));await evaluate('document.querySelector(".cache-settings").scrollIntoView({block:"start"})');await capture('day-cache-settings');report.selectedCacheDirectoryViaBridge=true
+    await evaluate('(()=>{const e=document.querySelector("[data-cache-preset]");e.value="20480";e.dispatchEvent(new Event("change",{bubbles:true}))})()');await click('[data-cache-save]');await wait(()=>cache.snapshot().limitBytes===20*1024*1024*1024)
+    await evaluate('(()=>{const e=document.querySelector("[data-cache-limit]");e.value="511";e.dispatchEvent(new Event("input",{bubbles:true}))})()');await waitUI('document.querySelector("[data-cache-save]").disabled');assert.equal(cache.snapshot().limitBytes,20*1024*1024*1024)
+    await evaluate('(()=>{const e=document.querySelector("[data-cache-limit]");e.value="1536";e.dispatchEvent(new Event("input",{bubbles:true}))})()');await click('[data-cache-save]');await wait(()=>cache.snapshot().limitBytes===1536*1024*1024);report.cacheCapacityPresetCustomAndInvalidUI=true
     await set({currentPage:'library'});await click('[data-shared-item]')
     assert.equal(await evaluate<boolean>('Array.from(document.querySelectorAll(".track-name")).every(element=>!element.textContent.includes(".mp3"))'),true);report.importedSuffixNotDisplayed=true
     assert.equal(await evaluate<boolean>('Boolean(document.querySelector("[data-row-play=\\"1\\"]"))&&Boolean(document.querySelector("[data-row-next=\\"1\\"]"))&&!document.querySelector("[data-track-position=\\"1\\"] [data-match-position]")'),true);report.matchedRowsHavePlaybackActions=true

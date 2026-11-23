@@ -1,6 +1,6 @@
 import type { CandidateId, MatchResult, MatchStatus, OnlineSearchRequest, OnlineSearchResult, ResourceCheck, TrackReference } from './music.ts'
 import type { AccountState } from './account.ts'
-import type { PlayerState, PlayerCommand, MediaEvent, PlaybackLibrary, LocalTrack, AudioCacheState } from './playback.ts'
+import type { PlayerState, PlayerCommand, MediaEvent, PlaybackLibrary, LocalTrack, AudioCacheState, CurrentTrackLocation } from './playback.ts'
 
 export const CHANNELS = Object.freeze({
   state: 'su:state', preferences: 'su:preferences', collection: 'su:collection', notices: 'su:notices', changed: 'su:changed',
@@ -11,6 +11,7 @@ export const CHANNELS = Object.freeze({
   pin: 'su:pin',
   player: 'su:player', playerCommand: 'su:player-command', mediaEvent: 'su:media-event', playerChanged: 'su:player-changed', playbackLibrary: 'su:playback-library',
   importLocal: 'su:import-local', removeLocal: 'su:remove-local', clearHistory: 'su:clear-history', playHistory: 'su:play-history', enqueueHistory: 'su:enqueue-history',
+  locateCurrentTrack: 'su:locate-current-track', setCacheLimit: 'su:set-cache-limit',
   chooseCache: 'su:choose-cache', resetCache: 'su:reset-cache', clearCache: 'su:clear-cache', checkUpdate: 'su:check-update', applyUpdate: 'su:apply-update'
 })
 export const PAGES = ['library', 'search', 'history', 'review', 'local', 'settings', 'now'] as const
@@ -102,6 +103,7 @@ export interface DesktopAPI {
   playerCommand(command: PlayerCommand): Promise<Result<PlayerState>>
   reportMediaEvent(event: MediaEvent): Promise<Result<null>>
   getPlaybackLibrary(): Promise<Result<PlaybackLibrary>>
+  locateCurrentTrack(collectionId: string): Promise<Result<CurrentTrackLocation>>
   importLocal(reference?: TrackReference): Promise<Result<LocalTrack[]>>
   removeLocal(id: string): Promise<Result<PlaybackLibrary>>
   clearHistory(): Promise<Result<PlaybackLibrary>>
@@ -110,6 +112,7 @@ export interface DesktopAPI {
   chooseCacheDirectory(): Promise<Result<AudioCacheState>>
   resetCacheDirectory(): Promise<Result<AudioCacheState>>
   clearAudioCache(): Promise<Result<AudioCacheState>>
+  setAudioCacheLimit(limitBytes: number): Promise<Result<AudioCacheState>>
   checkUpdate(): Promise<Result<UpdateInfo>>
   applyUpdate(): Promise<Result<UpdateInfo>>
   onPlayerChanged(callback: (state: PlayerState) => void): () => void

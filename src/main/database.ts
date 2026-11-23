@@ -7,6 +7,7 @@ import type { Collection, CollectionDetail, CollectionKind, Preferences, Track }
 import type { ImportedPlaylist, LibrarySearchItem, MatchResult, MatchStatus, OriginalTrack, TrackReference } from '../shared/music.ts'
 import type { AccountInfo, AccountLibrary, NeteaseAccountInfo, NeteaseLibrary } from '../shared/account.ts'
 import type { HistoryEntry, LocalTrack, ProblemTrack, PlaybackTarget } from '../shared/playback.ts'
+import {validatePlaybackTarget} from '../shared/playback.ts'
 import type { SourceCandidate } from '../shared/music.ts'
 import { candidateKey } from '../shared/music.ts'
 import { catalogTitle, publicTrack } from '../shared/track-name.ts'
@@ -56,6 +57,7 @@ const MIGRATIONS: (string|((database:DatabaseSync)=>void))[] = [
 ]
 
 export interface CatalogChange {collectionId:string;positions:Map<number,number>;targetCollectionId?:string}
+export interface PlaybackIdentity {candidateKey?:string;local?:{id:string;stamp?:string};originalKey?:string}
 interface SavedCatalogTrack {
   original:OriginalTrack
   bindings:{slot:string;value:string;selected:boolean}[]
@@ -196,6 +198,36 @@ export class MusicDatabase {
   getCollectionCoverUrl(id: string): string | null {
     const row = this.db.prepare('SELECT cover_url FROM collections WHERE id=?').get(id) as { cover_url?: string | null } | undefined
     return row?.cover_url ?? null
+  }
+  originalPlaybackKey(reference:TrackReference):string|undefined{
+    const original=this.getOriginal(reference),collection=this.getCollections().find(item=>item.id===reference.collectionId)
+    if(collection?.provider!=='kugou'||!original?.hash||!/^[a-f0-9]{32}$/i.test(original.hash))return undefined
+    return 'kugou:'+original.hash.toLowerCase()
+  }
+  findPlaybackPosition(collectionId:string,identity:PlaybackIdentity,preferredPosition?:number):number|null{
+    const collection=this.getCollections().find(item=>item.id===collectionId)
+    if(!collection)return null
+    if(identity.local){
+      const local=this.getLocal(identity.local.id)
+      if(!local||local.missing||identity.local.stamp&&identity.local.stamp!==local.size+':'+local.mtime)return null
+    }
+    let first:number|null=null
+    for(const [position,saved]of this.readCatalogMemory(collectionId)){
+      const binding=saved.bindings.find(item=>item.slot===(saved.choice??'original'))
+      let target:PlaybackTarget|null=null
+      if(binding)try{target=validatePlaybackTarget(JSON.parse(binding.value).target)}catch{}
+      const candidate=target?.kind==='candidate'?candidateKey(target.candidate):!binding?saved.match?.automaticCandidate:null
+      const matches=Boolean(
+        identity.local&&target?.kind==='local'&&target.localId===identity.local.id||
+        identity.candidateKey&&candidate===identity.candidateKey||
+        identity.originalKey&&!binding&&!candidate&&collection.provider==='kugou'&&saved.original.hash&&
+          /^[a-f0-9]{32}$/i.test(saved.original.hash)&&'kugou:'+saved.original.hash.toLowerCase()===identity.originalKey
+      )
+      if(!matches)continue
+      if(position===preferredPosition)return position
+      first=first===null?position:Math.min(first,position)
+    }
+    return first
   }
   getAllCollectionIds(): string[] {
     return this.db.prepare('SELECT id FROM collections').all().map(r => String((r as { id: unknown }).id))

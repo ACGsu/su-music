@@ -22,6 +22,15 @@ export interface LocalTrack {id:string;name:string;format:string;durationMs:numb
 export interface HistoryEntry {id:string;at:string;target:PlaybackTarget;now:PlaybackNow;playedMs:number;completed:boolean}
 export interface ProblemTrack {reference:TrackReference;title:string;collectionName:string;reason:string;status:string}
 export interface AudioCacheState {directory:string;usingDefault:boolean;bytes:number;tracks:number;limitBytes:number;warning:string|null}
+export interface CurrentTrackLocation {currentId:string|null;position:number|null}
+export const AUDIO_CACHE_MB=1024*1024
+export const AUDIO_CACHE_MIN_BYTES=512*AUDIO_CACHE_MB
+export const AUDIO_CACHE_MAX_BYTES=20*1024*AUDIO_CACHE_MB
+export const AUDIO_CACHE_DEFAULT_BYTES=2*1024*AUDIO_CACHE_MB
+export function validateAudioCacheLimit(input:unknown):number{
+  if(typeof input!=='number'||!Number.isSafeInteger(input)||input<AUDIO_CACHE_MIN_BYTES||input>AUDIO_CACHE_MAX_BYTES||input%AUDIO_CACHE_MB!==0)throw new Error('INVALID_CACHE_LIMIT')
+  return input
+}
 export interface PlaybackLibrary {local:LocalTrack[];history:HistoryEntry[];issues:ProblemTrack[];cache:AudioCacheState}
 export type PlayerCommand =
   {type:'play';target:PlaybackTarget}|{type:'play_collection';collectionId:string;position:number;skipUnavailable?:boolean}|

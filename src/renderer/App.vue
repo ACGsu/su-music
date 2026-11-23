@@ -15,9 +15,10 @@ import CacheSettings from './components/CacheSettings.vue'
 import TrackActions from './components/TrackActions.vue'
 import type { AppState, Collection, CollectionDetail, CollectionKind, Page, Preferences, UpdateInfo } from '../shared/contracts.ts'
 import type { MatchResult, SourceCandidate, TrackReference } from '../shared/music.ts'
-import { validateTrackReference } from '../shared/music.ts'
-import type { AudioCacheState, PlaybackLibrary, PlaybackTarget, PlayerCommand, PlayerState } from '../shared/playback.ts'
+import { candidateKey, validateTrackReference } from '../shared/music.ts'
+import type { AudioCacheState, CurrentTrackLocation, PlaybackLibrary, PlaybackTarget, PlayerCommand, PlayerState } from '../shared/playback.ts'
 import { validatePlayerCommand } from '../shared/playback.ts'
+import { centerListItem } from './playback-ui.ts'
 
 const state = ref<AppState | null>(null)
 const player = ref<PlayerState | null>(null)
@@ -41,6 +42,16 @@ const updateBusy = ref(false)
 const updateApplying = ref(false)
 const backgroundBusy = ref(false)
 const contentElement = ref<HTMLElement | null>(null)
+const contentAtTop = ref(true)
+const narrowMedia = window.matchMedia('(max-width: 1100px)')
+const narrowWindow = ref(narrowMedia.matches)
+function updateNarrowWindow(event: MediaQueryListEvent): void { narrowWindow.value = event.matches }
+const trackLocation = ref<CurrentTrackLocation | null>(null)
+const locating = ref(false)
+const locatedPosition = ref<number | null>(null)
+let locationGeneration = 0, highlightTimer: ReturnType<typeof setTimeout> | null = null
+let volumeRevision = 0, savedVolumeRevision = 0, volumeSaving = false
+let volumeSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 // Search Flyout & History state
 const searchFlyoutOpen = ref(false)
@@ -68,6 +79,92 @@ const currentReference = computed(() => {
   const current = player.value?.queue.find(item => item.id === player.value?.currentId)
   return current?.target.kind === 'original' ? current.target.reference : player.value?.now?.reference ?? null
 })
+const playlistActive = computed(() => page.value === 'library' && Boolean(detail.value))
+const compactDetail = computed(() => playlistActive.value && narrowWindow.value && (queueOpen.value || Boolean(versionOpen.value)))
+const currentDetailPosition = computed(() => {
+  if (!playlistActive.value || !player.value?.currentId) return null
+  if (trackLocation.value?.currentId === player.value.currentId) return trackLocation.value.position
+  const current = player.value.queue.find(item => item.id === player.value?.currentId)
+  return current?.target.kind === 'original' && current.target.reference.collectionId === detail.value?.collection.id ? current.target.reference.position : null
+})
+const locationSignature = computed(() => [
+  playlistActive.value ? detail.value?.collection.id : '',
+  player.value?.currentId, currentReference.value?.collectionId, currentReference.value?.position,
+  player.value?.now?.candidate ? candidateKey(player.value.now.candidate) : '',
+  player.value?.now?.localId, player.value?.now?.localStamp, player.value?.historyRevision
+].join('|'))
+watch([locationSignature, detail], () => { void refreshCurrentLocation() }, { immediate: true, flush: 'post' })
+watch(() => player.value?.media?.id, () => { if (page.value === 'settings') void reloadPlaybackLibrary() })
+
+async function refreshCurrentLocation(): Promise<void> {
+  const generation = ++locationGeneration, id = detail.value?.collection.id, signature = locationSignature.value
+  trackLocation.value = null
+  locatedPosition.value = null
+  if (highlightTimer) { clearTimeout(highlightTimer); highlightTimer = null }
+  if (!playlistActive.value || !id || !player.value?.currentId) return
+  try {
+    const result = await window.suMusic.locateCurrentTrack(id)
+    if (generation !== locationGeneration || signature !== locationSignature.value || detail.value?.collection.id !== id) return
+    if (result.ok && result.value.currentId === player.value?.currentId) trackLocation.value = result.value
+  } catch { /* Navigation stays available while a lookup is superseded or unavailable. */ }
+}
+
+function onContentScroll(): void { contentAtTop.value = (contentElement.value?.scrollTop ?? 0) <= 1 }
+function scrollToTop(): void { contentElement.value?.scrollTo({ top: 0, behavior: 'auto' }) }
+async function locatePlayingTrack(): Promise<void> {
+  const id = detail.value?.collection.id, currentId = player.value?.currentId, signature = locationSignature.value, generation = locationGeneration
+  if (!id || !currentId || locating.value) return
+  locating.value = true
+  try {
+    const result = await window.suMusic.locateCurrentTrack(id)
+    if (generation !== locationGeneration || signature !== locationSignature.value || !playlistActive.value) return
+    if (!result.ok) { error.value = result.error.message; return }
+    if (result.value.currentId !== currentId) return
+    trackLocation.value = result.value
+    const position = result.value.position
+    if (position === null) return
+    if (!filteredDetailTracks.value.some(track => track.position === position)) detailFilter.value = ''
+    await nextTick()
+    if (generation !== locationGeneration || signature !== locationSignature.value || detail.value?.collection.id !== id) return
+    const row = contentElement.value?.querySelector<HTMLElement>('[data-track-position="' + position + '"]')
+    if (!row || !contentElement.value) return
+    centerListItem(contentElement.value, row)
+    locatedPosition.value = position
+    if (highlightTimer) clearTimeout(highlightTimer)
+    highlightTimer = setTimeout(() => { locatedPosition.value = null; highlightTimer = null }, 1600)
+  } catch { error.value = '当前歌曲暂时无法定位，请重试。' }
+  finally { locating.value = false }
+}
+
+function updateVolume(value: number): void {
+  const next = Math.max(0, Math.min(100, Math.round(value)))
+  if (next !== volume.value) { volume.value = next; volumeRevision++ }
+}
+function saveVolume(value: number, deferred = false): void {
+  updateVolume(value)
+  if (volumeSaveTimer) clearTimeout(volumeSaveTimer)
+  volumeSaveTimer = null
+  if (deferred) volumeSaveTimer = setTimeout(() => { volumeSaveTimer = null; void flushVolume() }, 160)
+  else void flushVolume()
+}
+async function flushVolume(): Promise<void> {
+  if (volumeSaveTimer) { clearTimeout(volumeSaveTimer); volumeSaveTimer = null }
+  if (volumeSaving || savedVolumeRevision === volumeRevision) return
+  volumeSaving = true
+  try {
+    while (savedVolumeRevision < volumeRevision) {
+      const revision = volumeRevision
+      const result = await window.suMusic.setPreferences({ volume: volume.value })
+      if (!result.ok) { error.value = result.error.message; break }
+      savedVolumeRevision = revision
+      // Preference broadcasts update app state; this reply acknowledges the saved volume.
+    }
+  } catch { error.value = '音量设置未能保存，请重试。' }
+  finally { volumeSaving = false }
+}
+function volumeKeyReleased(event: KeyboardEvent): void {
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') void flushVolume()
+}
 
 const myCollections = computed(() => (state.value?.library.collections || []).filter(item => item.kind !== 'shared'))
 const shares = computed(() => (state.value?.library.collections || []).filter(item => item.kind === 'shared'))
@@ -194,12 +291,19 @@ function originalTarget(position: number): PlaybackTarget {
 function playTrack(position: number): void {
   if (detail.value) void command({ type: 'play_collection', collectionId: detail.value.collection.id, position })
 }
+function toggleTrackPlayback(position: number): void {
+  if (position === currentDetailPosition.value) void command({ type: 'control', action: player.value?.desiredPlaying ? 'pause' : 'resume' })
+  else playTrack(position)
+}
 
 function trackKey(event: KeyboardEvent, position: number): void {
   if (event.target === event.currentTarget) {
     event.preventDefault()
     playTrack(position)
   }
+}
+function trackSpace(event: KeyboardEvent, position: number): void {
+  if (event.target === event.currentTarget) { event.preventDefault(); toggleRowExpand(position) }
 }
 
 function trackDouble(event: MouseEvent, position: number): void {
@@ -256,17 +360,18 @@ async function openSourceCollection(id: string): Promise<void> {
 }
 
 function cacheChanged(value: AudioCacheState): void {
-  if (playbackLibrary.value) playbackLibrary.value.cache = value
+  if (playbackLibrary.value) { playbackLibrary.value.cache = value; void reloadPlaybackLibrary() }
 }
 
-function applyState(value: AppState): void {
+function applyState(value: AppState, syncVolume = true): void {
   const priorAccount = state.value?.account?.cachedAccount?.id
+  const priorProvider = state.value?.account?.activeProvider
   state.value = value
   if (detail.value) {
     const updated = value.library.collections.find(item => item.id === detail.value!.collection.id)
     if (updated) detail.value.collection.coverUrl = updated.coverUrl
   }
-  if (priorAccount && value.account?.cachedAccount?.id && priorAccount !== value.account.cachedAccount.id) {
+  if (priorProvider && priorProvider !== value.account?.activeProvider || priorAccount && value.account?.cachedAccount?.id && priorAccount !== value.account.cachedAccount.id) {
     detail.value = null
     versionOpen.value = null
   }
@@ -275,7 +380,7 @@ function applyState(value: AppState): void {
     lastSuccessfulSync = sync.lastSuccessAt
     void reloadOpenDetail()
   }
-  volume.value = value.preferences.volume
+  if (syncVolume && savedVolumeRevision === volumeRevision) volume.value = value.preferences.volume
   document.documentElement.dataset.theme = value.effectiveTheme
   document.documentElement.dataset.density = value.preferences.density
 }
@@ -304,7 +409,7 @@ async function backToLibrary(): Promise<void> {
 
 async function patchPreferences(patch: Partial<Preferences>): Promise<void> {
   const result = await window.suMusic.setPreferences(patch)
-  if (result.ok) { applyState(result.value); error.value = '' }
+  if (result.ok) { applyState(result.value, false); error.value = '' }
   else error.value = result.error.message
 }
 async function setBackgroundPlayback(event: Event): Promise<void> {
@@ -498,7 +603,15 @@ function keyboard(event: KeyboardEvent): void {
     queueOpen.value = false
     versionOpen.value = null
   }
-  const target = event.target as HTMLElement | null
+  const target = event.target instanceof Element ? event.target as HTMLElement : null
+  if (state.value && !event.defaultPrevented && !event.isComposing && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey &&
+      !noticesDialog.value?.open && !searchFlyoutOpen.value && !versionOpen.value && !target?.isContentEditable &&
+      !target?.closest('input,textarea,select,[role="textbox"],[role="combobox"],[role="slider"],[role="dialog"],[role="menu"],[role="listbox"],[role="tree"],[role="tablist"]') &&
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    event.preventDefault()
+    saveVolume(volume.value + (event.key === 'ArrowUp' ? 5 : -5), true)
+    return
+  }
   // Space shortcut on song row toggles expand/collapse; elsewhere toggles playback
   if (event.code === 'Space' && !event.ctrlKey && !event.altKey && !event.metaKey && !target?.isContentEditable && !noticesDialog.value?.open) {
     if (target?.closest('tr[data-track-position]')) {
@@ -514,6 +627,8 @@ function keyboard(event: KeyboardEvent): void {
 
 onMounted(async () => {
   window.addEventListener('keydown', keyboard)
+  window.addEventListener('keyup', volumeKeyReleased)
+  narrowMedia.addEventListener('change', updateNarrowWindow)
   try {
     unsubscribe = window.suMusic.onStateChanged(applyState)
     unsubscribePlayer = window.suMusic.onPlayerChanged(applyPlayer)
@@ -531,6 +646,10 @@ onBeforeUnmount(() => {
   unsubscribe?.()
   unsubscribePlayer?.()
   window.removeEventListener('keydown', keyboard)
+  window.removeEventListener('keyup', volumeKeyReleased)
+  narrowMedia.removeEventListener('change', updateNarrowWindow)
+  if (highlightTimer) clearTimeout(highlightTimer)
+  void flushVolume()
 })
 </script>
 
@@ -645,7 +764,8 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <main ref="contentElement" class="content" :class="{ 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }">
+    <div class="content-frame" :class="{ 'playlist-active': playlistActive, 'compact-detail': compactDetail, 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }">
+    <main ref="contentElement" class="content" :class="{ 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }" @scroll="onContentScroll">
       <div v-if="error" class="error-banner" role="alert">
         <span>{{ error }}</span>
         <button class="icon-button" aria-label="关闭提示" @click="error = ''"><Icon name="close" /></button>
@@ -816,8 +936,8 @@ onBeforeUnmount(() => {
               <tr>
                 <th class="position-cell">#</th>
                 <th>歌曲 / 歌手</th>
-                <th class="album-cell">专辑</th>
-                <th class="duration-cell">时长</th>
+                <th v-if="!compactDetail" class="album-cell">专辑</th>
+                <th v-if="!compactDetail" class="duration-cell">时长</th>
                 <th class="state-cell">操作</th>
               </tr>
             </thead>
@@ -827,24 +947,17 @@ onBeforeUnmount(() => {
                   :data-track-position="track.position"
                   :class="{
                     selected: selectedPosition === track.position,
-                    'playing-track': currentReference?.collectionId === detail.collection.id && currentReference.position === track.position
+                    'playing-track': currentDetailPosition === track.position,
+                    'located-track': locatedPosition === track.position
                   }"
                   tabindex="0"
                   @click="toggleRowExpand(track.position)"
                   @dblclick="trackDouble($event, track.position)"
                   @keydown.enter="trackKey($event, track.position)"
-                  @keydown.space.prevent="toggleRowExpand(track.position)"
+                  @keydown.space="trackSpace($event, track.position)"
                 >
                   <td class="position-cell">
                     <span>{{ String(track.position).padStart(2, '0') }}</span>
-                    <button
-                      class="icon-button row-play"
-                      :aria-label="'播放 ' + (track.title ?? track.filename)"
-                      :data-play-position="track.position"
-                      @click.stop="playTrack(track.position)"
-                    >
-                      <Icon name="play" />
-                    </button>
                   </td>
                   <td>
                     <p class="track-name">
@@ -859,12 +972,14 @@ onBeforeUnmount(() => {
                       <span v-if="!track.playbackReady" class="track-match-note"> · {{ matchLabel(track.matchStatus) }}</span>
                     </p>
                   </td>
-                  <td class="album-cell"><span class="album-text" :title="track.album || '—'">{{ track.album || '—' }}</span></td>
-                  <td class="duration-cell">{{ duration(track.durationMs) }}</td>
+                  <td v-if="!compactDetail" class="album-cell"><span class="album-text" :title="track.album || '—'">{{ track.album || '—' }}</span></td>
+                  <td v-if="!compactDetail" class="duration-cell">{{ duration(track.durationMs) }}</td>
                   <td class="state-cell">
                     <TrackActions
                       :track="track"
-                      @play="playTrack"
+                      :current="currentDetailPosition === track.position"
+                      :desired-playing="player?.desiredPlaying"
+                      @play="toggleTrackPlayback"
                       @next="position => enqueue(position, 'next')"
                       @version="position => inspectOriginal({ collectionId: detail!.collection.id, position })"
                     />
@@ -873,7 +988,7 @@ onBeforeUnmount(() => {
 
                 <!-- Inline Action Row Directly Underneath Song Row -->
                 <tr v-if="expandedPosition === track.position" class="inline-action-row" :data-inline-actions="track.position">
-                  <td colspan="5">
+                  <td :colspan="compactDetail ? 3 : 5">
                     <div class="inline-action-panel">
                       <div class="inline-action-content">
                         <div class="inline-action-title">
@@ -1063,6 +1178,11 @@ onBeforeUnmount(() => {
         @back="navigate(previousPage, true)"
       />
     </main>
+    <aside v-if="playlistActive" class="playlist-navigation" aria-label="歌单导航" data-playlist-navigation>
+      <button v-if="currentDetailPosition !== null" class="icon-button" :disabled="locating" aria-label="定位当前歌曲" title="定位当前歌曲" data-locate-current @click.stop="locatePlayingTrack"><Icon name="locate" /></button>
+      <button class="icon-button" :disabled="contentAtTop" aria-label="回到顶部" title="回到顶部" data-scroll-top @click.stop="scrollToTop"><Icon name="top" /></button>
+    </aside>
+    </div>
 
     <VersionPanel
       v-if="versionOpen"
@@ -1079,8 +1199,8 @@ onBeforeUnmount(() => {
       :volume="volume"
       :queue-open="queueOpen"
       @command="command"
-      @volume="volume = $event"
-      @save-volume="patchPreferences({ volume: $event })"
+      @volume="updateVolume"
+      @save-volume="saveVolume"
       @now="navigate('now')"
       @queue="toggleQueue"
     />
