@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, protocol, safeStorage, session, Tray } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { MusicDatabase } from './database.ts'
 import { CredentialVault } from './vault.ts'
@@ -17,6 +18,8 @@ import { PublicHttpClient } from './music/http.ts'
 import { KugouShareImporter } from './music/share.ts'
 import { p1MockHttp, runP1Smoke } from './import-smoke.ts'
 import { CollectionCoverCache } from './music/covers.ts'
+import { TrackMetadataService } from './music/metadata.ts'
+import { currentMetadataIdentity } from '../shared/metadata.ts'
 import { AccountController, accountMessage } from './account/controller.ts'
 import { KugouHttpTransport } from './account/protocol.ts'
 import {P2SmokeTransport,runP2Smoke} from './account-smoke.ts'
@@ -34,6 +37,7 @@ import {realAudioFetch,runRealAudio,seedRealControl} from './p3-real-audio.ts'
 import {p4MockFetch,p4MockHttp,P4Transport,runP4Smoke,seedP4Smoke} from './layout-smoke.ts'
 import { UpdateError, UpdateService, updateMessage, type Distribution } from './update.ts'
 import { BackgroundPlayback } from './background.ts'
+import { metadataSmokeResponse } from './metadata-smoke.ts'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'su-music', privileges: { standard: true, secure: true, supportFetchAPI: true, stream:true } }])
 app.setName('Su Music')
@@ -78,6 +82,7 @@ let log: LocalLog | null = null
 let budget: GdRequestBudget | null = null
 let music: MusicSourceService | null = null
 let covers: CollectionCoverCache | null = null
+let trackMetadata: TrackMetadataService | null = null
 let account: AccountController | null = null
 let audioCache:SongCache|null=null,mediaRegistry:MediaRegistry|null=null,playbackSources:PlaybackSources|null=null,player:PlayerController|null=null
 let coverRefresh:Promise<void>|null=null,lastCoverSync:string|null=null,lastNeteaseCoverSync:string|null=null
@@ -90,6 +95,7 @@ app.on('second-instance',()=>background?.showWindow())
 function requestQuit():void { background?.prepareQuit(); app.quit() }
 function shutdown():void {
   background?.close()
+  trackMetadata?.close();trackMetadata=null
   player?.close();player=null;mediaRegistry?.close();mediaRegistry=null;audioCache?.close();audioCache=null;account?.close();account=null
   log?.event('shutdown');log=null;budget?.close();budget=null;database?.close();database=null;music=null
 }
@@ -143,6 +149,7 @@ function playbackLibrary():PlaybackLibrary{return{local:database!.getLocalTracks
 function localId(value:unknown):string{if(typeof value!=='string'||!/^[-\w]{1,128}$/.test(value))throw new Error('INVALID_REQUEST');return value}
 function registerIPC(target: BrowserWindow): void {
   const protect = (handler: (...args: unknown[]) => unknown) => async (event: Electron.IpcMainInvokeEvent, ...args: unknown[]): Promise<Result<unknown>> => {
+    if (target.isDestroyed() || target.webContents.isDestroyed()) return { ok: false, error: { code: 'IPC_SENDER_DENIED', message: '此请求无法执行。' } }
     const frame = event.senderFrame, main = target.webContents.mainFrame
     if (event.sender !== target.webContents || !frame || frame.processId !== main.processId || frame.routingId !== main.routingId || !isTrustedPage(frame.url, expectedURL)) {
       log?.event('ipc_rejected', { code: 'IPC_SENDER_DENIED' })
@@ -156,6 +163,23 @@ function registerIPC(target: BrowserWindow): void {
     return args[1] === true
   }
   const handlers = {
+    [CHANNELS.trackArtwork]: async (...args: unknown[]) => {
+      if (args.length !== 1) throw new Error('INVALID_REQUEST')
+      const reference = validateTrackReference(args[0]), accountKey = database!.currentAccountKey()
+      const source = database!.getTrackArtworkSource(reference)
+      if (!source) return null
+      const url = await trackMetadata!.artwork(source)
+      if (!database || database.currentAccountKey() !== accountKey || JSON.stringify(database.getTrackArtworkSource(reference)) !== JSON.stringify(source)) return null
+      return { identity: createHash('sha256').update(source.identity).digest('hex'), url }
+    },
+    [CHANNELS.currentTrackMetadata]: async (...args: unknown[]) => {
+      if (args.length !== 1) throw new Error('INVALID_REQUEST')
+      const id = localId(args[0]), snapshot = player!.snapshot(), accountKey = database!.currentAccountKey()
+      if (snapshot.currentId !== id || !snapshot.now) return null
+      const identity = currentMetadataIdentity(snapshot), result = await trackMetadata!.current(snapshot)
+      if (!database || !player || database.currentAccountKey() !== accountKey || currentMetadataIdentity(player.snapshot()) !== identity) return null
+      return result
+    },
     [CHANNELS.state]: (...args: unknown[]) => { if (args.length) throw new Error('INVALID_REQUEST'); return currentState() },
     [CHANNELS.preferences]: (...args: unknown[]) => {
       if (args.length !== 1) throw new Error('INVALID_REQUEST')
@@ -286,7 +310,7 @@ app.whenReady().then(async () => {
   budget = new GdRequestBudget(path.join(p3RealAudio?normalUserData:app.getPath('userData'), 'gd-budget.sqlite'))
   const smokeRoot=path.dirname(app.getPath('userData'))
   const liveFetch=p4Smoke?p4MockFetch(smokeRoot):p3RealAudio?realAudioFetch():fetch
-  const http = p4Smoke?p4MockHttp(smokeRoot):p3Smoke?p3MockHttp(smokeRoot):p1Smoke ? p1MockHttp(smokeRoot) : new PublicHttpClient(liveFetch)
+  const http = p4Smoke?p4MockHttp(smokeRoot):p3Smoke?p3MockHttp(smokeRoot):p1Smoke ? p1MockHttp(smokeRoot) : p2Smoke ? new PublicHttpClient(async input => { const result=metadataSmokeResponse(new URL(String(input)));if(!result)throw new Error('ACCOUNT_SMOKE_EXTERNAL_REQUEST');return result }) : new PublicHttpClient(liveFetch)
   const adapter=new GdNeteaseAdapter(database,budget,http)
   music = new MusicSourceService(database, adapter, new KugouShareImporter(http))
   audioCache=new SongCache(database,app.getPath('userData'))
@@ -303,12 +327,14 @@ app.whenReady().then(async () => {
   if(p3Smoke)seedP3Smoke(database,phase)
   if(p4Smoke)seedP4Smoke(database,smokeRoot,phase)
   if(p3RealAudio)seedRealControl(database)
-  covers = new CollectionCoverCache(database,path.join(app.getPath('userData'),'covers'),input=>{
+  const sanitizeCover = (maximum: number) => (input: Buffer): Buffer => {
     const image=nativeImage.createFromBuffer(input),size=image.getSize()
     if(image.isEmpty()||size.width<=0||size.height<=0||size.width>4096||size.height>4096)throw new Error('COVER_INVALID')
-    const scale = Math.min(1, 500 / size.width, 500 / size.height)
+    const scale = Math.min(1, maximum / size.width, maximum / size.height)
     return image.resize({width:Math.max(1,Math.round(size.width*scale)),height:Math.max(1,Math.round(size.height*scale)),quality:'good'}).toJPEG(85)
-  },http)
+  }
+  covers = new CollectionCoverCache(database,path.join(app.getPath('userData'),'covers'),sanitizeCover(500),http)
+  trackMetadata = new TrackMetadataService(database,adapter,path.join(app.getPath('userData'),'track-artwork'),sanitizeCover(800),http)
   const protectionAvailable = await safeStorage.isAsyncEncryptionAvailable()
   vault = new CredentialVault(path.join(app.getPath('userData'), 'private'), {
     available: () => protectionAvailable,
@@ -326,6 +352,8 @@ app.whenReady().then(async () => {
     if (request.method !== 'GET') return new Response('Forbidden', { status: 403 })
     const imageRequest=/^su-music:\/\/app\/cover\/([a-f0-9]{64})\.jpg$/.exec(request.url)
     if(imageRequest){const bytes=covers?.read(imageRequest[1]!);return bytes?new Response(new Uint8Array(bytes),{headers:{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=86400'}}):new Response('Not found',{status:404})}
+    const artworkRequest=/^su-music:\/\/app\/artwork\/([a-f0-9]{64})\.jpg$/.exec(request.url)
+    if(artworkRequest){const bytes=trackMetadata?.readArtwork(artworkRequest[1]!);return bytes?new Response(new Uint8Array(bytes),{headers:{'Content-Type':'image/jpeg','X-Content-Type-Options':'nosniff','Cache-Control':'private, max-age=86400'}}):new Response('Not found',{status:404})}
     const file = assetPath(rendererRoot, request.url)
     if (!file) return new Response('Forbidden', { status: 403 })
     try {

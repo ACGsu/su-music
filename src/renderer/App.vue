@@ -13,6 +13,9 @@ import QueuePanel from './components/QueuePanel.vue'
 import PlaybackPages from './components/PlaybackPages.vue'
 import CacheSettings from './components/CacheSettings.vue'
 import TrackActions from './components/TrackActions.vue'
+import TrackArtwork from './components/TrackArtwork.vue'
+import NowPlaying from './components/NowPlaying.vue'
+import { useCurrentMetadata } from './current-metadata.ts'
 import type { AppState, Collection, CollectionDetail, CollectionKind, Page, Preferences, UpdateInfo } from '../shared/contracts.ts'
 import type { MatchResult, SourceCandidate, TrackReference } from '../shared/music.ts'
 import { candidateKey, validateTrackReference } from '../shared/music.ts'
@@ -22,6 +25,7 @@ import { centerListItem } from './playback-ui.ts'
 
 const state = ref<AppState | null>(null)
 const player = ref<PlayerState | null>(null)
+const { metadata: currentMetadata, metadataBusy, reloadMetadata } = useCurrentMetadata(player, () => [state.value?.account?.activeProvider, state.value?.account?.cachedAccount?.id].join(':'))
 const playbackLibrary = ref<PlaybackLibrary | null>(null)
 const error = ref('')
 const detail = ref<CollectionDetail | null>(null)
@@ -43,6 +47,21 @@ const updateApplying = ref(false)
 const backgroundBusy = ref(false)
 const contentElement = ref<HTMLElement | null>(null)
 const contentAtTop = ref(true)
+const contentScrollbarWidth = ref(10)
+let contentResize: ResizeObserver | null = null
+const detailArtworkRevision = ref(0)
+const navigationElement = ref<HTMLElement | null>(null), navigationVisible = ref(false)
+let navigationFrame = 0, pointerX = 0, pointerY = 0
+function navigationPointer(event: PointerEvent): void {
+  pointerX = event.clientX; pointerY = event.clientY
+  if (navigationFrame) return
+  navigationFrame = requestAnimationFrame(() => {
+    navigationFrame = 0
+    const rect = navigationElement.value?.getBoundingClientRect()
+    navigationVisible.value = Boolean(rect && pointerX >= rect.left - 20 && pointerX <= rect.right + 20 && pointerY >= rect.top - 20 && pointerY <= rect.bottom + 20)
+  })
+}
+function hideNavigation(): void { navigationVisible.value = false }
 const narrowMedia = window.matchMedia('(max-width: 1100px)')
 const narrowWindow = ref(narrowMedia.matches)
 function updateNarrowWindow(event: MediaQueryListEvent): void { narrowWindow.value = event.matches }
@@ -80,6 +99,7 @@ const currentReference = computed(() => {
   return current?.target.kind === 'original' ? current.target.reference : player.value?.now?.reference ?? null
 })
 const playlistActive = computed(() => page.value === 'library' && Boolean(detail.value))
+watch([playlistActive, queueOpen, versionOpen], hideNavigation)
 const compactDetail = computed(() => playlistActive.value && narrowWindow.value && (queueOpen.value || Boolean(versionOpen.value)))
 const currentDetailPosition = computed(() => {
   if (!playlistActive.value || !player.value?.currentId) return null
@@ -392,6 +412,7 @@ async function reloadOpenDetail(): Promise<void> {
   if (generation !== detailRefreshGeneration || detail.value?.collection.id !== id) return
   if (result.ok) {
     detail.value = result.value
+    detailArtworkRevision.value++
     if (!result.value) versionOpen.value = null
   }
 }
@@ -468,6 +489,7 @@ async function pinCurrent(): Promise<void> {
 
 async function importedCollection(value: CollectionDetail): Promise<void> {
   detail.value = value
+  detailArtworkRevision.value++
   selectedPosition.value = null
   expandedPosition.value = null
   detailFilter.value = ''
@@ -628,7 +650,13 @@ function keyboard(event: KeyboardEvent): void {
 onMounted(async () => {
   window.addEventListener('keydown', keyboard)
   window.addEventListener('keyup', volumeKeyReleased)
+  window.addEventListener('pointermove', navigationPointer, { passive: true })
+  window.addEventListener('blur', hideNavigation)
   narrowMedia.addEventListener('change', updateNarrowWindow)
+  if (contentElement.value) {
+    const measure = () => { const element = contentElement.value; if (element) contentScrollbarWidth.value = Math.max(0, element.offsetWidth - element.clientWidth) }
+    measure(); contentResize = new ResizeObserver(measure); contentResize.observe(contentElement.value)
+  }
   try {
     unsubscribe = window.suMusic.onStateChanged(applyState)
     unsubscribePlayer = window.suMusic.onPlayerChanged(applyPlayer)
@@ -647,14 +675,18 @@ onBeforeUnmount(() => {
   unsubscribePlayer?.()
   window.removeEventListener('keydown', keyboard)
   window.removeEventListener('keyup', volumeKeyReleased)
+  window.removeEventListener('pointermove', navigationPointer)
+  window.removeEventListener('blur', hideNavigation)
+  cancelAnimationFrame(navigationFrame)
   narrowMedia.removeEventListener('change', updateNarrowWindow)
+  contentResize?.disconnect()
   if (highlightTimer) clearTimeout(highlightTimer)
   void flushVolume()
 })
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'now-mode': page === 'now' }">
     <AudioBridge :player="player" :volume="volume" />
     <header class="titlebar">
       <div class="brand">
@@ -717,7 +749,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <aside class="sidebar" aria-label="主导航">
+    <aside v-if="page !== 'now'" class="sidebar" aria-label="主导航">
       <div class="nav-caption">音乐与收藏 <span>01—05</span></div>
       <nav>
         <button
@@ -739,9 +771,9 @@ onBeforeUnmount(() => {
         <span class="small-rule" aria-hidden="true"></span>
       </div>
       <div class="pinned-list">
-        <button v-for="item in pinned" :key="item.id" class="pinned-item" @click="openCollection(item)">
+        <button v-for="item in pinned" :key="item.id" class="pinned-item" :title="item.name" @click="openCollection(item)">
+          <span class="pinned-name">{{ item.name }}</span>
           <span class="pin-marker" aria-hidden="true"></span>
-          <span>{{ item.name }}</span>
         </button>
         <p v-if="!pinned.length" class="empty-pins">暂无置顶歌单</p>
       </div>
@@ -764,7 +796,7 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <div class="content-frame" :class="{ 'playlist-active': playlistActive, 'compact-detail': compactDetail, 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }">
+    <div class="content-frame" :class="{ 'playlist-active': playlistActive, 'now-active': page === 'now', 'compact-detail': compactDetail, 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }" :style="{ '--content-scrollbar-width': contentScrollbarWidth + 'px' }">
     <main ref="contentElement" class="content" :class="{ 'with-queue': queueOpen, 'with-version': Boolean(versionOpen) }" @scroll="onContentScroll">
       <div v-if="error" class="error-banner" role="alert">
         <span>{{ error }}</span>
@@ -959,18 +991,23 @@ onBeforeUnmount(() => {
                   <td class="position-cell">
                     <span>{{ String(track.position).padStart(2, '0') }}</span>
                   </td>
-                  <td>
-                    <p class="track-name">
-                      {{ track.title || track.filename || '标题待补充' }}
-                      <span v-if="track.version" class="version-label">{{ track.version }}</span>
-                      <span v-if="track.playbackChoice === 'selected' || track.playbackChoice === 'local'" class="choice-label">
-                        {{ track.playbackChoice === 'local' ? '本地版本' : '已选版本' }}
-                      </span>
-                    </p>
-                    <p class="track-artist">
-                      {{ track.artist || (track.playbackChoice === 'local' ? '本地音频' : '歌手信息缺失') }}
-                      <span v-if="!track.playbackReady" class="track-match-note"> · {{ matchLabel(track.matchStatus) }}</span>
-                    </p>
+                  <td class="track-content-cell">
+                    <div class="song-cell">
+                      <TrackArtwork :collection-id="detail.collection.id" :position="track.position" :revision="detailArtworkRevision" />
+                      <div class="song-copy">
+                        <p class="track-name" :title="track.title || track.filename || '标题待补充'">
+                          <span class="track-title-text" data-track-title>{{ track.title || track.filename || '标题待补充' }}</span>
+                          <span class="track-badges">
+                            <span v-if="track.version" class="version-label">{{ track.version }}</span>
+                            <span v-if="track.playbackChoice === 'selected' || track.playbackChoice === 'local'" class="choice-label">{{ track.playbackChoice === 'local' ? '本地版本' : '已选版本' }}</span>
+                          </span>
+                        </p>
+                        <p class="track-artist" :title="track.artist || (track.playbackChoice === 'local' ? '本地音频' : '歌手信息缺失')">
+                          <span class="track-artist-text" data-track-artist>{{ track.artist || (track.playbackChoice === 'local' ? '本地音频' : '歌手信息缺失') }}</span>
+                          <span v-if="!track.playbackReady" class="track-match-note"> · {{ matchLabel(track.matchStatus) }}</span>
+                        </p>
+                      </div>
+                    </div>
                   </td>
                   <td v-if="!compactDetail" class="album-cell"><span class="album-text" :title="track.album || '—'">{{ track.album || '—' }}</span></td>
                   <td v-if="!compactDetail" class="duration-cell">{{ duration(track.durationMs) }}</td>
@@ -1161,10 +1198,21 @@ onBeforeUnmount(() => {
         </section>
       </section>
 
+      <NowPlaying
+        v-else-if="page === 'now'"
+        :player="player"
+        :app="state"
+        :metadata="currentMetadata"
+        :metadata-busy="metadataBusy"
+        :queue-open="queueOpen"
+        @back="navigate(previousPage, true)"
+        @inspect="inspectOriginal"
+        @collection="openSourceCollection"
+        @retry-metadata="reloadMetadata"
+      />
       <PlaybackPages
         v-else
         :page="page"
-        :player="player"
         :library="playbackLibrary"
         :app="state"
         @command="command"
@@ -1175,10 +1223,9 @@ onBeforeUnmount(() => {
         @play-history="playHistory"
         @enqueue-history="enqueueHistory"
         @clear-history="clearHistory"
-        @back="navigate(previousPage, true)"
       />
     </main>
-    <aside v-if="playlistActive" class="playlist-navigation" aria-label="歌单导航" data-playlist-navigation>
+    <aside v-if="playlistActive" ref="navigationElement" class="playlist-navigation" :class="{ 'is-revealed': navigationVisible }" aria-label="歌单导航" data-playlist-navigation>
       <button v-if="currentDetailPosition !== null" class="icon-button" :disabled="locating" aria-label="定位当前歌曲" title="定位当前歌曲" data-locate-current @click.stop="locatePlayingTrack"><Icon name="locate" /></button>
       <button class="icon-button" :disabled="contentAtTop" aria-label="回到顶部" title="回到顶部" data-scroll-top @click.stop="scrollToTop"><Icon name="top" /></button>
     </aside>
@@ -1198,6 +1245,7 @@ onBeforeUnmount(() => {
       :player="player"
       :volume="volume"
       :queue-open="queueOpen"
+      :artwork-url="currentMetadata?.artworkUrl"
       @command="command"
       @volume="updateVolume"
       @save-volume="saveVolume"

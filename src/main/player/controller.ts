@@ -9,6 +9,7 @@ import type {MediaRegistry} from './media.ts'
 import {PlayerError,playerMessage} from './errors.ts'
 import {SourceError} from '../music/errors.ts'
 import {validatePlaybackTarget} from '../../shared/playback.ts'
+import {validateCandidateId} from '../../shared/music.ts'
 
 export function emptyPlayer():PlayerState{return{phase:'idle',queue:[],currentId:null,mode:'sequence',now:null,media:null,desiredPlaying:false,positionMs:0,durationMs:null,seekToMs:0,seekSerial:0,reason:null,retryAt:null,skipped:[],historyRevision:0}}
 const sameReference=(a:PlaybackTarget,b:PlaybackTarget):boolean=>a.kind==='original'&&b.kind==='original'&&a.reference.collectionId===b.reference.collectionId&&a.reference.position===b.reference.position
@@ -37,6 +38,9 @@ interface SavedSession {
     collectionName: string | null
     binding: 'same' | 'alternative' | 'local' | 'direct'
     source?: string
+    candidate?: SourceCandidate | null
+    localId?: string | null
+    localStamp?: string
   } | null
 }
 
@@ -102,7 +106,10 @@ export class PlayerController {
           reference:this.state.now.reference,
           collectionName:this.state.now.collectionName,
           binding:this.state.now.binding,
-          source:this.state.now.source
+          source:this.state.now.source,
+          candidate:this.state.now.candidate,
+          localId:this.state.now.localId,
+          localStamp:this.state.now.localStamp
         }:null
       }
       this.db.setSetting('playback-session:'+this.accountKey,session)
@@ -152,6 +159,11 @@ export class PlayerController {
       this.state.positionMs=0
       this.state.seekToMs=0
       if(currentEntry){
+        let savedCandidate:SourceCandidate|null=null
+        const candidate=saved.now?.candidate
+        if(candidate&&typeof candidate.title==='string'&&Array.isArray(candidate.artists)&&candidate.artists.every(name=>typeof name==='string')){
+          try{validateCandidateId({providerId:candidate.providerId,sourceId:candidate.sourceId,trackId:candidate.trackId});savedCandidate=structuredClone(candidate)}catch{}
+        }
         if(saved.now&&typeof saved.now==='object'&&typeof saved.now.title==='string'){
           this.state.now={
             title:saved.now.title,
@@ -162,8 +174,9 @@ export class PlayerController {
             reference:currentEntry.target.kind==='original'?currentEntry.target.reference:null,
             original:null,
             collectionName:currentEntry.collectionName,
-            candidate:null,
-            localId:currentEntry.target.kind==='local'?currentEntry.target.localId:null,
+            candidate:savedCandidate,
+            localId:currentEntry.target.kind==='local'?currentEntry.target.localId:saved.now.localId??null,
+            ...(saved.now.localStamp?{localStamp:saved.now.localStamp}:{}),
             binding:saved.now.binding||'direct',
             source:saved.now.source||'上次播放',
             format:null,

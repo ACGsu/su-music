@@ -13,6 +13,8 @@ import { candidateKey } from '../shared/music.ts'
 import { catalogTitle, publicTrack } from '../shared/track-name.ts'
 import { compareCandidate, matchCandidates } from './music/matching.ts'
 import { candidateTrack, reconcileCatalogPositions } from './music/catalog.ts'
+import { extractKugouCover } from './account/library.ts'
+import type { ArtworkSource } from './music/metadata.ts'
 
 export const SCHEMA_VERSION = 8
 const MIGRATIONS: (string|((database:DatabaseSync)=>void))[] = [
@@ -236,6 +238,36 @@ export class MusicDatabase {
     const isSharedActive = (accountKey.startsWith('kg:') || accountKey.startsWith('ne:')) ? 1 : 0
     const row=this.db.prepare(PRESENTATION_SELECT+" WHERE (c.account_key=? OR (?=1 AND c.account_key='local' AND c.kind='shared')) AND t.collection_id=? AND t.position=?").get(accountKey, isSharedActive, reference.collectionId, reference.position)
     return row?{track:this.presentTrack(row),collectionName:String(row.collection_name)}:null
+  }
+  getTrackArtworkSource(reference: TrackReference): ArtworkSource | null {
+    const original = this.getOriginal(reference)
+    if (!original) return null
+    const binding = this.getBinding(reference)
+    if (binding?.target.kind === 'local') return { identity: 'local:' + binding.target.localId, coverUrl: null, candidate: null, hash: null }
+    const row = this.db.prepare('SELECT t.raw_json,c.provider FROM collection_tracks t JOIN collections c ON c.id=t.collection_id WHERE t.collection_id=? AND t.position=?').get(reference.collectionId, reference.position)!
+    let raw: Record<string, unknown> = {}
+    try { const value: unknown = JSON.parse(String(row.raw_json)); if (value && typeof value === 'object' && !Array.isArray(value)) raw = value as Record<string, unknown> } catch {}
+    const match = binding ? null : this.getMatch(reference, signatureOf(original))
+    let candidate = binding?.target.kind === 'candidate' ? binding.target.candidate : match?.candidates.find(item => candidateKey(item.candidate) === match.automaticCandidate)?.candidate ?? null
+    if (!candidate && row.provider === 'netease' && /^[1-9]\d{0,17}$/.test(String(raw.id ?? ''))) candidate = { providerId: 'gd', sourceId: 'netease', trackId: String(raw.id) }
+    let coverUrl: string | null = null
+    if (!binding?.selected) {
+      if (row.provider === 'netease') {
+        const album = raw.al ?? raw.album
+        if (album && typeof album === 'object' && !Array.isArray(album)) {
+          const value = (album as Record<string, unknown>).picUrl
+          if (typeof value === 'string') coverUrl = value
+        }
+      } else coverUrl = extractKugouCover(raw) ?? extractKugouCover(raw.albuminfo as Record<string, unknown> | undefined)
+    }
+    if (coverUrl && coverUrl.length > 2048) coverUrl = null
+    const hash = typeof original.hash === 'string' && /^[a-fA-F0-9]{32}$/.test(original.hash) ? original.hash.toUpperCase() : null
+    const candidateCover = Boolean(candidate && row.provider === 'netease' && String(raw.id ?? '') === candidate.trackId && !binding?.selected)
+    const catalogImage = !binding?.selected && (hash || coverUrl && !candidateCover)
+    return {
+      identity: catalogImage ? hash ? 'kugou:' + hash : 'original:' + reference.collectionId + ':' + reference.position + ':' + signatureOf(original) : candidate ? candidateKey(candidate) : 'original:' + reference.collectionId + ':' + reference.position + ':' + signatureOf(original),
+      candidate, coverUrl, hash: catalogImage ? hash : null, candidateCover
+    }
   }
   private presentTrack(row:Record<string,unknown>):Track{
     const original=originalFromRow(row),signature=signatureOf(original),reference={collectionId:String(row.collection_id),position:original.position}

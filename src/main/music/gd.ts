@@ -8,6 +8,8 @@ import { PublicHttpClient, checkedPublicUrl } from './http.ts'
 import { inspectAudioHeader } from './audio.ts'
 import { normalizedText } from './matching.ts'
 import { withoutAudioExtension, catalogTitle } from '../../shared/track-name.ts'
+import type { TrackLyrics } from '../../shared/metadata.ts'
+import { parseNeteaseLyrics } from './lyrics.ts'
 
 export interface SourceCache {
   getSourceCache<T>(kind: string, key: string): T | null
@@ -65,6 +67,16 @@ export function enrichNeteaseCandidates(candidates: SourceCandidate[], input: un
       metadataComplete: consistent && durationMs !== null && artists.length > 0
     }
   })
+}
+
+export function parseNeteaseArtwork(input: unknown, trackId: string): string | null {
+  const body = record(input)
+  if (!body || body.code !== 200 || !Array.isArray(body.songs)) throw new SourceError('SOURCE_RESPONSE_INVALID')
+  const song = body.songs.map(record).find(item => item && identifier(item.id) === trackId)
+  if (!song) throw new SourceError('SOURCE_RESPONSE_INVALID')
+  const address = text(record(song.al ?? song.album)?.picUrl)
+  if (!address || address.length > 2048) return null
+  try { return checkedPublicUrl(address, 'cover').href } catch { return null }
 }
 
 export function parseGdResource(input: unknown): { url: string; bitrate: number | null; qualityCode: number | null; size: number | null } {
@@ -206,11 +218,25 @@ export class GdNeteaseAdapter {
     this.cache = cache; this.budget = budget; this.http = http
   }
 
-  private async json(url: string, scope: 'gd' | 'netease', onReserved?: () => void, maxBytes = 2 * 1024 * 1024): Promise<unknown> {
-    this.budget.reserve()
+  private async json(url: string, scope: 'gd' | 'netease', onReserved?: () => void, maxBytes = 2 * 1024 * 1024, headroom = 0): Promise<unknown> {
+    this.budget.reserve(headroom)
     onReserved?.()
     try { return await this.http.json(url, scope, maxBytes) }
     catch (error) { if (error instanceof SourceError && error.code === 'SOURCE_RATE_LIMITED') this.budget.cooldown(error.retryAt ?? Date.now() + 60_000); throw error }
+  }
+
+  async fetchTrackArtwork(candidate: CandidateId, background = false): Promise<string | null> {
+    if (candidate.providerId !== 'gd' || candidate.sourceId !== 'netease' || !identifier(candidate.trackId)) throw new SourceError('SOURCE_RESPONSE_INVALID')
+    const address = new URL('https://music.163.com/api/song/detail/')
+    address.search = new URLSearchParams({ id: candidate.trackId, ids: JSON.stringify([Number(candidate.trackId)]) }).toString()
+    return parseNeteaseArtwork(await this.json(address.href, 'netease', undefined, 512 * 1024, background ? 4 : 2), candidate.trackId)
+  }
+
+  async fetchTrackLyrics(candidate: CandidateId): Promise<TrackLyrics> {
+    if (candidate.providerId !== 'gd' || candidate.sourceId !== 'netease' || !identifier(candidate.trackId)) throw new SourceError('SOURCE_RESPONSE_INVALID')
+    const address = new URL('https://music.163.com/api/song/lyric')
+    address.search = new URLSearchParams({ id: candidate.trackId, lv: '-1', kv: '-1', tv: '-1' }).toString()
+    return parseNeteaseLyrics(await this.json(address.href, 'netease', undefined, 512 * 1024, 2))
   }
 
   search(input: string | OnlineSearchRequest, force = false): Promise<OnlineSearchResult> {

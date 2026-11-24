@@ -14,7 +14,7 @@ export async function verifyDesktopSecurity(window: BrowserWindow, root: string)
     'matchTrack','checkResource','startLogin','cancelLogin','logout','syncAccount','cancelSync',
     'connectNetease','refreshNetease','cancelNeteaseSync','logoutNetease','switchAccount',
     'getSearchHistory','addSearchHistory','removeSearchHistory','clearSearchHistory',
-    'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','locateCurrentTrack','importLocal','removeLocal',
+    'setPinned','getPlayer','playerCommand','reportMediaEvent','getPlaybackLibrary','locateCurrentTrack','getTrackArtwork','getCurrentTrackMetadata','importLocal','removeLocal',
     'clearHistory','playHistory','enqueueHistory','chooseCacheDirectory','resetCacheDirectory','clearAudioCache','setAudioCacheLimit','checkUpdate','applyUpdate','onPlayerChanged'
   ].sort())
   for (const command of [
@@ -23,6 +23,10 @@ export async function verifyDesktopSecurity(window: BrowserWindow, root: string)
     'window.suMusic.checkResource({providerId:"gd",sourceId:"kugou",trackId:"100"})',
     'window.suMusic.playerCommand({type:"play",target:{kind:"file",filename:"C:/private"}})',
     'window.suMusic.locateCurrentTrack({collectionId:"one",filename:"C:/private"})',
+    'window.suMusic.getTrackArtwork({collectionId:"one",position:1,url:"https://127.0.0.1/private"})',
+    'window.suMusic.getTrackArtwork({collectionId:"one",position:0})',
+    'window.suMusic.getCurrentTrackMetadata({currentId:"one",url:"https://127.0.0.1/private"})',
+    'window.suMusic.getCurrentTrackMetadata("../private")',
     'window.suMusic.setAudioCacheLimit(511*1024*1024)',
     'window.suMusic.setAudioCacheLimit(21*1024*1024*1024)'
   ]) assert.equal((await evaluate<{ok: boolean}>(command)).ok, false)

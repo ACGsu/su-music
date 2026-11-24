@@ -20,6 +20,7 @@ import {byteRange} from './player/media.ts'
 import {registerLocalFile} from './player/local.ts'
 import type {KugouOperation,KugouTransport} from './account/protocol.ts'
 import {AccountError} from './account/protocol.ts'
+import {metadataSmokeResponse} from './metadata-smoke.ts'
 
 const OWNER={id:'87654321',nickname:'P4 综合验证账号'}
 const LONG='長い日本語の曲名と中文歌名用于检查完整显示・Original recording'
@@ -47,6 +48,7 @@ export function p4MockFetch(root:string):FetchFunction{
   return async(input,options)=>{
     const url=new URL(String(input)),headers=new Headers(options?.headers),observed=requests.get(root)!
     assert.equal(options?.credentials,'omit');assert(!headers.has('cookie')&&!headers.has('authorization'))
+    const metadata=metadataSmokeResponse(url);if(metadata)return metadata
     if(url.hostname==='music-api.gdstudio.xyz'){
       if(url.searchParams.get('types')!=='url')throw new Error('P4_UNEXPECTED_SEARCH_REQUEST')
       observed.source++;const id=url.searchParams.get('id')
@@ -107,18 +109,64 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
   const report:Record<string,unknown>={at:new Date().toISOString(),phase,testProtocol:2,suite:'layout',functional,packaged:app.isPackaged,scale,scaleMethod:'Chromium --force-device-scale-factor on Windows; OS global settings unchanged',environment:{system:process.getSystemVersion(),arch:process.arch,release:os.release(),electron:process.versions.electron,node:process.versions.node,sqlite:db.sqliteVersion()},sourceMode:'synthetic account and audio responses; no real account or external network',schemaVersion:db.schemaVersion(),scenes:[],timings:[],passed:false}
   const evaluate=async<T>(code:string):Promise<T>=>{try{return await window.webContents.executeJavaScript(code,true) as T}catch(error){throw new Error('P4_RENDERER_STEP: '+code.slice(0,180),{cause:error})}}
   const wait=async(code:string,timeout=20000):Promise<void>=>{const end=Date.now()+timeout;while(Date.now()<end){if(await evaluate<boolean>(code))return;await delay(40)}throw new Error('P4_UI_WAIT_TIMEOUT: '+code.slice(0,100))}
-  const click=async(selector:string):Promise<void>=>{await evaluate('document.querySelector('+JSON.stringify(selector)+').click()');await delay(80)}
+  const click=async(selector:string):Promise<void>=>{
+    if(selector.startsWith('[data-nav')&&!await evaluate<boolean>('Boolean(document.querySelector(".sidebar"))')){await evaluate('document.querySelector("[data-now-back]").click()');await delay(100)}
+    await evaluate('document.querySelector('+JSON.stringify(selector)+').click()');await delay(80)
+  }
   const set=async(value:unknown):Promise<void>=>{assert.equal((await evaluate<{ok:boolean}>('window.suMusic.setPreferences('+JSON.stringify(value)+')')).ok,true);await delay(80)}
   const input=async(selector:string,value:string):Promise<void>=>{await evaluate('(()=>{const input=document.querySelector('+JSON.stringify(selector)+');input.value='+JSON.stringify(value)+';input.dispatchEvent(new Event("input",{bubbles:true}))})()');await delay(80)}
   const sort=async(value:string):Promise<void>=>{await evaluate('(()=>{const input=document.querySelector("[aria-label=\\"歌单排序\\"]");input.value='+JSON.stringify(value)+';input.dispatchEvent(new Event("change",{bubbles:true}))})()');await delay(100)}
   const names=():Promise<string[]>=>evaluate('Array.from(document.querySelectorAll("[data-collections] .collection-name"),item=>item.textContent.trim())')
-  const key=async(keyCode:string,modifiers:NonNullable<Electron.KeyboardInputEvent['modifiers']>=[]):Promise<void>=>{window.webContents.focus();window.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});window.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(100)}
+  const key=async(keyCode:string,modifiers:NonNullable<Electron.KeyboardInputEvent['modifiers']>=[]):Promise<void>=>{window.focus();window.webContents.focus();window.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});if(keyCode==='Enter')window.webContents.sendInputEvent({type:'char',keyCode:'Enter',modifiers});window.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(100)}
+  const point=async(selector:string):Promise<{x:number;y:number}>=>evaluate('(()=>{const r=document.querySelector('+JSON.stringify(selector)+').getBoundingClientRect();return{x:Math.round((r.left+r.right)/2),y:Math.round((r.top+r.bottom)/2)}})()')
+  const nativeClick=async(selector:string):Promise<void>=>{
+    const {x,y}=await point(selector);window.focus();window.webContents.focus();window.webContents.sendInputEvent({type:'mouseMove',x,y});await delay(180)
+    window.webContents.sendInputEvent({type:'mouseDown',x,y,button:'left',clickCount:1});window.webContents.sendInputEvent({type:'mouseUp',x,y,button:'left',clickCount:1});await delay(150)
+  }
   const capture=async(name:string):Promise<void>=>{
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');await delay(200)
     for(let attempt=0;attempt<3;attempt++)try{const screenshot=await window.webContents.capturePage();assert(!screenshot.isEmpty(),'P4_EMPTY_SCREENSHOT');fs.writeFileSync(path.join(root,name+'.png'),screenshot.toPNG());return}catch(error){if(attempt===2)throw error;await delay(400)}
   }
   const layout=async(label:string):Promise<void>=>{
-    assert(await evaluate<boolean>('(()=>{const nav=document.querySelector("[data-playlist-navigation]");if(!nav)return true;const frame=document.querySelector(".content-frame").getBoundingClientRect(),content=document.querySelector(".content").getBoundingClientRect(),buttons=Array.from(nav.querySelectorAll("button")),boxes=buttons.map(e=>e.getBoundingClientRect());const usable=buttons.every((e,i)=>{const r=boxes[i],hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);return r.left>=frame.left&&r.right<=frame.right&&r.top>=frame.top&&r.bottom<=frame.bottom&&e.contains(hit)});const clear=Array.from(document.querySelectorAll(".state-cell button")).every(e=>{const r=e.getBoundingClientRect(),clip=e.closest(".track-table-wrap").getBoundingClientRect(),left=Math.max(r.left,clip.left),right=Math.min(r.right,clip.right);if(right<=left||r.bottom<=content.top||r.top>=content.bottom)return true;return r.left>=clip.left-1&&r.right<=clip.right+1&&boxes.every(b=>right<=b.left||left>=b.right||r.bottom<=b.top||r.top>=b.bottom)});return usable&&clear})()'),'P4_PLAYLIST_NAVIGATION '+label)
+    assert(await evaluate<boolean>('(()=>{const nav=document.querySelector("[data-playlist-navigation]");if(!nav)return true;const frame=document.querySelector(".content-frame").getBoundingClientRect(),content=document.querySelector(".content").getBoundingClientRect(),buttons=Array.from(nav.querySelectorAll("button")),boxes=buttons.map(e=>e.getBoundingClientRect());const usable=buttons.every((e,i)=>{const r=boxes[i],hit=document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2);return r.left>=frame.left&&r.right<=frame.right&&r.top>=frame.top&&r.bottom<=frame.bottom&&(getComputedStyle(e).pointerEvents==="auto"?e.contains(hit):!e.contains(hit))});const clear=Array.from(document.querySelectorAll(".state-cell button")).every(e=>{const r=e.getBoundingClientRect(),clip=e.closest(".track-table-wrap").getBoundingClientRect(),left=Math.max(r.left,clip.left),right=Math.min(r.right,clip.right);if(right<=left||r.bottom<=content.top||r.top>=content.bottom)return true;return r.left>=clip.left-1&&r.right<=clip.right+1&&boxes.every(b=>right<=b.left||left>=b.right||r.bottom<=b.top||r.top>=b.bottom)});return usable&&clear})()'),'P4_PLAYLIST_NAVIGATION '+label)
+    assert(await evaluate<boolean>(`(()=>{
+      return Array.from(document.querySelectorAll('.pinned-item')).every(button=>{
+        const name=button.querySelector('.pinned-name'),marker=button.querySelector('.pin-marker');if(!name||!marker)return false;
+        const original=name.textContent,style=getComputedStyle(name),before=name.getBoundingClientRect(),dot=marker.getBoundingClientRect(),markStyle=getComputedStyle(marker),bounds=button.getBoundingClientRect();
+        if(button.title!==original||style.whiteSpace!=='nowrap'||style.textOverflow!=='ellipsis'||style.overflow!=='hidden')return false;
+        if(before.width<=0||dot.left<before.right||dot.right>bounds.right||dot.top<bounds.top||dot.bottom>bounds.bottom||dot.width<4||dot.width>8||Math.abs(dot.width-dot.height)>0.25)return false;
+        if(markStyle.backgroundColor!=='rgb(255, 250, 0)'||parseFloat(markStyle.borderTopWidth)!==0||(markStyle.borderRadius!=='50%'&&parseFloat(markStyle.borderRadius)<dot.width/2))return false;
+        try{
+          for(const text of ['超长置顶歌单名称'.repeat(20),'VeryLongPlaylistWithoutSpaces'.repeat(12),'中文 Mixed 日本語'.repeat(18)]){
+            name.textContent=text;const after=name.getBoundingClientRect(),afterDot=marker.getBoundingClientRect();
+            if(name.scrollWidth<=name.clientWidth||Math.abs(after.height-before.height)>0.25||Math.abs(afterDot.left-dot.left)>0.25||Math.abs(button.getBoundingClientRect().height-bounds.height)>0.25)return false;
+          }
+          return true;
+        }finally{name.textContent=original;}
+      });
+    })()`),'P4_PINNED_SINGLE_LINE_AND_YELLOW_DOT '+label)
+    assert(await evaluate<boolean>(`(()=>{const cover=document.querySelector('[data-now-cover-stage]');return !cover||cover.textContent.trim()==='';})()`),'P4_NOW_COVER_IMAGE_ONLY '+label)
+    assert(await evaluate<boolean>(`(()=>{
+      const rows=Array.from(document.querySelectorAll('tr[data-track-position]')).slice(0,8);
+      for(const row of rows)for(const selector of ['[data-track-title]','[data-track-artist]']){
+        const e=row.querySelector(selector),original=e.textContent,r=e.getBoundingClientRect(),s=getComputedStyle(e);
+        if(r.width<=0||r.height>parseFloat(s.lineHeight)+1||e.parentElement.title!==original)return false;
+        const rowHeight=row.getBoundingClientRect().height;e.textContent='超长中文と日本語 VeryLongNameWithoutSpaces '.repeat(20);
+        const after=e.getBoundingClientRect(),ok=e.scrollWidth>e.clientWidth&&after.height<=parseFloat(s.lineHeight)+1&&Math.abs(row.getBoundingClientRect().height-rowHeight)<1;e.textContent=original;if(!ok)return false;
+      }
+      return true;
+    })()`),'P4_TRACK_SINGLE_LINE '+label)
+    assert(await evaluate<boolean>(`(()=>{
+      const page=document.querySelector('[data-now-page]');if(!page)return true;
+      const frame=document.querySelector('.content-frame').getBoundingClientRect(),content=document.querySelector('.content').getBoundingClientRect();
+      if(document.querySelector('.sidebar')||Math.abs(frame.left)>1)return false;
+      const lyrics=document.querySelector('[data-lyrics-scroll]');if(!lyrics)return true;
+      const box=lyrics.getBoundingClientRect(),cover=document.querySelector('[data-now-cover-stage]'),queue=document.querySelector('[data-queue-panel]');
+      if(box.width<100||box.height<60||box.top<content.top-1||box.bottom>content.bottom+1)return false;
+      if((getComputedStyle(cover).display==='none')!==Boolean(queue))return false;
+      if(queue)return box.right<=queue.getBoundingClientRect().left+1&&!queue.querySelector('[data-track-artwork]');
+      const image=document.querySelector('.now-artwork').getBoundingClientRect();return Math.abs(image.width-image.height)<2&&image.top>=content.top&&image.bottom<=content.bottom;
+    })()`),'P4_NOW_LYRICS_LAYOUT '+label)
     const value=await evaluate<{width:number;height:number;dpr:number;outerOverflow:boolean;contentOverflow:boolean;footerVisible:boolean;accent:string;yellowText:boolean}>(`(()=>{
       const content=document.querySelector('.content'),footer=document.querySelector('.player'),r=footer.getBoundingClientRect();
       const controls=Array.from(footer.querySelectorAll('button,input')).filter(e=>!e.disabled);
@@ -132,6 +180,7 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
       const result=await window.suMusic.getState(),account=result.value.account??{};
       const expected=account.activeProvider==='netease'?Boolean(account.netease?.connected):account.kugou?.phase==='authenticated';
       const dot=document.querySelector('[data-account-dot]'),probe=document.createElement('span');
+      if(!dot)return Boolean(document.querySelector('[data-now-page]'))&&!document.querySelector('.sidebar');
       probe.style.color='var(--muted)';document.body.append(probe);const gray=getComputedStyle(probe).color;probe.remove();
       return dot.classList.contains('connected')===expected&&getComputedStyle(dot).backgroundColor===(expected?'rgb(255, 250, 0)':gray);
     })()`),'P4_CONNECTION_DOT '+label)
@@ -218,7 +267,16 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
       await input('[data-detail-filter-input]','5000');await wait('document.querySelectorAll(".track-table tbody tr[data-track-position]").length===1')
       await click('[data-locate-current]');await wait('document.querySelector("[data-detail-filter-input]").value===""&&document.querySelector(".located-track")?.dataset.trackPosition==="2500"')
       assert(await evaluate<boolean>('(()=>{const a=document.querySelector(".content").getBoundingClientRect(),c=document.querySelector(".content"),b=document.querySelector(".located-track").getBoundingClientRect();return Math.abs((b.top+b.bottom)/2-(a.top+c.clientTop+c.clientHeight/2))<3})()'))
-      await layout('located-middle-track');await capture('located-middle-track');await click('[data-scroll-top]');await wait('document.querySelector(".content").scrollTop===0')
+      await layout('located-middle-track');await capture('located-middle-track');await click('[data-scroll-top]');await wait('document.querySelector(".content").scrollTop===0 && "dom-top"')
+      await evaluate('document.querySelector(".content").scrollTop=document.querySelector(".content").scrollHeight');await delay(100)
+      window.focus();window.webContents.focus();window.webContents.sendInputEvent({type:'mouseMove',x:2,y:2});await wait('getComputedStyle(document.querySelector("[data-playlist-navigation]")).opacity<0.5')
+      const nav=await point('[data-scroll-top]');window.webContents.sendInputEvent({type:'mouseMove',x:nav.x-22,y:nav.y});await delay(180)
+      await wait('getComputedStyle(document.querySelector("[data-playlist-navigation]")).opacity>0.95')
+      assert(await evaluate<boolean>('(()=>{const r=document.querySelector("[data-scroll-top]").getBoundingClientRect(),hit=document.elementFromPoint(r.left-6,(r.top+r.bottom)/2);return !document.querySelector("[data-playlist-navigation]").contains(hit)})()'))
+      await nativeClick('[data-scroll-top]');await wait('document.querySelector(".content").scrollTop===0 && "mouse-top"')
+      await evaluate('document.querySelector(".content").scrollTop=1000');window.webContents.sendInputEvent({type:'mouseMove',x:2,y:2});await delay(180);await key('Tab');await evaluate('document.querySelector("[data-scroll-top]").focus()');await delay(180)
+      await wait('getComputedStyle(document.querySelector("[data-playlist-navigation]")).opacity>0.95');await key('Enter');await wait('document.querySelector(".content").scrollTop===0 && "keyboard-top"');await evaluate('document.activeElement.blur()')
+      report.playlistNavigationProximityPassThroughAndKeyboard=true
       report.playlistNavigationClearsHiddenFilterAndCenters=true
     }
     await evaluate('window.suMusic.playerCommand({type:"control",action:"pause"})');await delay(100)
@@ -249,6 +307,23 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     }
     await set({volume:0});await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value="0";e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}));})()');await evaluate('window.suMusic.playerCommand({type:"control",action:"resume"})');await delay(80)
     report.rangeFillEndpointsAndMidpointVerified=true
+    if(functional){
+      const browsingScroll=await evaluate<number>('document.querySelector(".content").scrollTop');await click('[data-now]')
+      await wait('Boolean(document.querySelector("[data-lyric-active]"))&&Array.from(document.querySelectorAll(".player-cover img,.now-artwork img")).length===2&&Array.from(document.querySelectorAll(".player-cover img,.now-artwork img")).every(img=>img.complete&&img.naturalWidth>0)')
+      assert(await evaluate<boolean>('document.querySelector(".player-cover img").src===document.querySelector(".now-artwork img").src'))
+      const seekLyrics=async(position:number):Promise<void>=>{await evaluate('(()=>{const e=document.querySelector("[data-seek]");e.value='+position+';e.dispatchEvent(new Event("input",{bubbles:true}));e.dispatchEvent(new Event("change",{bubbles:true}))})()');await delay(200)}
+      await seekLyrics(10000);await wait('document.querySelector("[data-lyric-active]")?.dataset.lyricTime==="9000"');await click('[data-play-toggle]');await wait('document.querySelector("[data-audio]").paused')
+      const pausedLine=await evaluate<string>('document.querySelector("[data-lyric-active]").dataset.lyricIndex');await delay(300);assert.equal(await evaluate<string>('document.querySelector("[data-lyric-active]").dataset.lyricIndex'),pausedLine)
+      const lyricPoint=await point('[data-lyrics-scroll]');window.webContents.sendInputEvent({type:'mouseMove',...lyricPoint});window.webContents.sendInputEvent({type:'mouseWheel',...lyricPoint,deltaX:0,deltaY:-200});await wait('Boolean(document.querySelector("[data-lyrics-follow]"))')
+      await delay(400);await evaluate('document.querySelector("[data-lyrics-scroll]").scrollTop=0');await click('[data-play-toggle]');await delay(2400)
+      assert.equal(await evaluate<number>('document.querySelector("[data-lyrics-scroll]").scrollTop'),0)
+      const media=player.snapshot().media!.id;await click('[data-queue]');await layout('now-queue-manual-lyrics');assert(await evaluate<boolean>('Boolean(document.querySelector("[data-lyrics-follow]"))&&document.querySelector("[data-lyrics-scroll]").scrollTop===0'))
+      await capture('now-queue-bilingual-lyrics');await click('[data-queue]');assert.equal(player.snapshot().media!.id,media)
+      await nativeClick('[data-lyrics-follow]');await wait('(()=>{const c=document.querySelector("[data-lyrics-scroll]"),r=document.querySelector("[data-lyric-active]").getBoundingClientRect(),a=c.getBoundingClientRect();return !document.querySelector("[data-lyrics-follow]")&&Math.abs((r.top+r.bottom)/2-(a.top+c.clientHeight/2))<4})()')
+      await seekLyrics(2000);await wait('document.querySelector("[data-lyric-active]")?.dataset.lyricTime==="0"');await layout('now-bilingual-seek-back');await capture('now-bilingual-cover')
+      await click('[data-now-back]');assert.equal(await evaluate<number>('document.querySelector(".content").scrollTop'),browsingScroll)
+      report.coverAndBilingualLyricsSeekPauseManualFollowAndQueue=true
+    }
     for(const theme of ['day','night'] as const){
       await set({theme})
       for(const page of ['library','search','history','review','local','settings','now']){
@@ -275,6 +350,6 @@ export async function runP4Smoke(window:BrowserWindow,db:MusicDatabase,player:Pl
     await set({currentPage:'settings'});await click('[data-notices]');await wait('document.querySelector("dialog").open');await layout('license-dialog-minimum');if(functional){const notices=await evaluate<string>('document.querySelector("dialog pre").textContent');assert(notices.includes('qrcode')&&notices.includes('electron'))}await key('Escape');await wait('!document.querySelector("dialog").open');report.licensesKeyboardDismissed=true
     await click('[data-nav="library"]');await click('[data-view="list"]');await input('[aria-label="筛选歌单名称"]','默认收藏');await click('[data-collections] .collection-card');await wait('document.querySelector(".empty-inline")?.textContent.includes("没有曲目")');await layout('empty-playlist-minimum');report.emptyCollectionHasClearState=true
     await set({theme:'night',density:'compact',libraryView:'list',currentPage:'settings',volume:0});report.requestCounts=requests.get(root);report.elapsedMs=Math.round(performance.now()-began);report.passed=true
-  }catch(error){report.error=error instanceof Error?error.message:'P4_SMOKE_FAILED';report.state={phase:player.snapshot().phase,reason:player.snapshot().reason};throw error}
+  }catch(error){report.error=error instanceof Error?error.message:'P4_SMOKE_FAILED';report.state={phase:player.snapshot().phase,reason:player.snapshot().reason};try{report.ui=await evaluate('(()=>{const c=document.querySelector(".content"),b=document.querySelector("[data-scroll-top]"),a=document.activeElement,r=b?.getBoundingClientRect();return{top:c?.scrollTop,disabled:b?.disabled,active:a?.outerHTML?.slice(0,300),nav:getComputedStyle(document.querySelector("[data-playlist-navigation]")).pointerEvents,hit:r?document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2)?.outerHTML?.slice(0,300):null}})()');await capture('failure')}catch{}throw error}
   finally{report.elapsedMs=Math.round(performance.now()-began);report.requestCounts=requests.get(root);fs.writeFileSync(path.join(root,'report-'+phase+'.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({p4SmokePassed:report.passed,phase,scale,error:report.error??null,scenes:(report.scenes as unknown[]).length}))}
 }

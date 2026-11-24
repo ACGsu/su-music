@@ -9,6 +9,7 @@ import type {PlayerController} from './player/controller.ts'
 import type {SongCache} from './player/cache.ts'
 import type {MediaRegistry} from './player/media.ts'
 import {PublicHttpClient} from './music/http.ts'
+import {metadataSmokeResponse} from './metadata-smoke.ts'
 import type {FetchFunction} from './music/http.ts'
 import {byteRange} from './player/media.ts'
 import {matchCandidates} from './music/matching.ts'
@@ -37,6 +38,7 @@ export function p3MockHttp(root:string):PublicHttpClient{
   const audio=p3MockAudio(root)
   return new PublicHttpClient(async(input,options)=>{
     const url=new URL(String(input)),stats=observations.get(root)!
+    const metadata=metadataSmokeResponse(url);if(metadata)return metadata
     if(url.hostname==='music-api.gdstudio.xyz'){
       if(url.searchParams.get('types')==='url'){
         const trackId=url.searchParams.get('id')!,quality=url.searchParams.get('br')!;stats.urls.push({id:trackId,quality})
