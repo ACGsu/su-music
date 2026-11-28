@@ -12,6 +12,7 @@ import {validatePlaybackTarget} from '../../shared/playback.ts'
 import {validateCandidateId} from '../../shared/music.ts'
 
 export function emptyPlayer():PlayerState{return{phase:'idle',queue:[],currentId:null,mode:'sequence',now:null,media:null,desiredPlaying:false,positionMs:0,durationMs:null,seekToMs:0,seekSerial:0,reason:null,retryAt:null,skipped:[],historyRevision:0}}
+const DEFAULT_STALE_PAUSE_MS=10*60*1000
 const sameReference=(a:PlaybackTarget,b:PlaybackTarget):boolean=>a.kind==='original'&&b.kind==='original'&&a.reference.collectionId===b.reference.collectionId&&a.reference.position===b.reference.position
 
 interface SavedSession {
@@ -64,14 +65,15 @@ export class PlayerController {
   private lastPosition=0
   private lastProgressAt=0
   private lastHistorySave=0
+  private pausedAt:number|null=null
   private coverage:{start:number;end:number}[]=[]
   private db:MusicDatabase
   private sources:PlaybackSources
   private media:MediaRegistry
   private changed:(state:PlayerState)=>void
-  private options:{now?:()=>number;random?:()=>number;stallMs?:number}
+  private options:{now?:()=>number;random?:()=>number;stallMs?:number;stalePauseMs?:number}
   constructor(db:MusicDatabase,sources:PlaybackSources,media:MediaRegistry,changed:(state:PlayerState)=>void,
-    options:{now?:()=>number;random?:()=>number;stallMs?:number}={}){
+    options:{now?:()=>number;random?:()=>number;stallMs?:number;stalePauseMs?:number}={}){
     this.db=db;this.sources=sources;this.media=media;this.changed=changed;this.options=options
     this.accountKey=db.currentAccountKey()
     const mode=db.getSetting<unknown>('playback-mode','sequence');if(['sequence','shuffle','repeat_one'].includes(String(mode)))this.state.mode=mode as PlayerState['mode']
@@ -228,7 +230,7 @@ export class PlayerController {
   }
   private emit():void{this.changed(this.snapshot())}
   private clearTimer():void{if(this.timer)clearTimeout(this.timer);this.timer=null}
-  private release():void{this.clearTimer();if(this.state.media)this.media.revoke(this.state.media.id);this.state.media=null}
+  private release():void{this.clearTimer();this.pausedAt=null;if(this.state.media)this.media.revoke(this.state.media.id);this.state.media=null}
   private current():QueueEntry|null{return this.state.queue.find(item=>item.id===this.state.currentId)??null}
   private makeEntry(target:PlaybackTarget):QueueEntry{
     const entry={id:randomUUID(),target:structuredClone(target),...this.sources.describe(target)}
@@ -313,7 +315,7 @@ export class PlayerController {
         for(const item of this.state.queue)if(sameReference(item.target,target))this.overrides.delete(item.id)
         if(current&&sameReference(current.target,target))this.begin(current,false);else this.emit();break
       }
-      case'retry':{const current=this.current();if(current)this.begin(current,false,true);break}
+      case'retry':{const current=this.current();if(current)this.resumeEntry(current,true,false,this.state.phase!=='needs_review');break}
     }
     this.saveSession()
     return this.snapshot()
@@ -329,11 +331,26 @@ export class PlayerController {
       this.flushHistory();this.generation++;this.release();this.state.phase='idle';this.state.desiredPlaying=false;this.state.currentId=null;this.state.now=null;this.state.positionMs=0;this.state.durationMs=null;this.state.reason=null;this.state.retryAt=null;this.emit();return
     }
     if(action==='pause'){
-      this.state.desiredPlaying=false;this.clearTimer();if(!['idle','needs_review','error','resolving'].includes(this.state.phase))this.state.phase='paused';this.flushHistory();this.emit();return
+      this.state.desiredPlaying=false;this.clearTimer()
+      if(!['idle','needs_review','error','resolving'].includes(this.state.phase)){
+        this.state.phase='paused'
+        if(this.pausedAt===null)this.pausedAt=this.clock()
+      }
+      this.flushHistory();this.emit();return
     }
     if(action==='resume'){
       const current=this.current()??this.state.queue[0];if(!current)return
-      if(!this.state.media){if(this.state.phase==='resolving'){this.state.desiredPlaying=true;this.emit()}else this.begin(current,false);return}
+      const pausedAt=this.pausedAt;this.pausedAt=null
+      if(!this.state.media){
+        if(this.state.phase==='resolving'){this.state.desiredPlaying=true;this.emit()}
+        else this.resumeEntry(current,false,false,true)
+        return
+      }
+      const staleMs=this.options.stalePauseMs??DEFAULT_STALE_PAUSE_MS
+      if(pausedAt!==null&&this.clock()-pausedAt>=staleMs&&this.media.isRemote(this.state.media.id)){
+        this.resumeEntry(current,false,false,true)
+        return
+      }
       this.state.desiredPlaying=true;this.state.reason=null;this.state.phase='loading';this.watchdog();this.emit();return
     }
     if(action==='previous'&&this.state.positionMs>3000&&this.state.media){this.seek(0);return}
@@ -349,6 +366,18 @@ export class PlayerController {
     if(!this.state.media)return
     const target=Math.max(0,Math.min(position,this.state.durationMs??this.state.now?.expectedDurationMs??position))
     this.state.seekToMs=target;this.state.seekSerial++;this.state.positionMs=target;this.lastPosition=target;this.lastProgressAt=this.clock();this.emit()
+  }
+  private resumeEntry(entry:QueueEntry,force:boolean,recovery:boolean,preservePosition=true):void{
+    const duration=this.state.durationMs??this.state.now?.observedDurationMs??this.state.now?.expectedDurationMs??entry.durationMs
+    const atEnd=this.state.phase==='ended'||(duration!==null&&duration>0&&this.state.positionMs>=Math.max(0,duration-1000))
+    if(!preservePosition||atEnd||this.state.positionMs<=0||this.state.currentId!==entry.id){
+      this.begin(entry,false,force,false)
+      return
+    }
+    this.flushHistory();this.release();this.generation++;this.attempts={used:0,limit:2};this.rateWaits=0;this.automatic=false
+    this.pass.clear();this.state.skipped=[];this.lastPosition=this.state.positionMs;this.lastProgressAt=this.clock()
+    this.state.currentId=entry.id;this.state.phase='resolving';this.state.desiredPlaying=true;this.state.seekToMs=this.state.positionMs;this.state.seekSerial++;this.state.reason=null;this.state.retryAt=null
+    this.emit();void this.resolveCurrent(force,recovery)
   }
   private begin(entry:QueueEntry,automatic:boolean,force=false,recordNavigation=true):void{
     this.flushHistory();this.release();this.generation++;this.attempts={used:0,limit:2};this.rateWaits=0;this.automatic=automatic
@@ -401,12 +430,13 @@ export class PlayerController {
       case'metadata':this.state.phase=this.state.desiredPlaying?'loading':'paused';this.saveSession();break
       case'playing':{
         if(!this.state.desiredPlaying)return
-        this.clearTimer();this.state.phase='playing';this.state.reason=null;this.pass.clear();this.shuffleVisited.add(this.state.currentId!)
+        this.clearTimer();this.pausedAt=null;this.attempts={used:0,limit:2};this.rateWaits=0
+        this.state.phase='playing';this.state.reason=null;this.pass.clear();this.shuffleVisited.add(this.state.currentId!)
         const current=this.current();if(current?.target.kind==='original')this.db.clearIssue(current.target.reference)
         if(!this.historyStarted&&this.state.now&&current){this.historyStarted=true;this.history={id:randomUUID(),at:new Date(this.clock()).toISOString(),target:structuredClone(current.target),now:structuredClone(this.state.now),playedMs:0,completed:false};this.revision();this.flushHistory()}
         this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();this.saveSession();break
       }
-      case'paused':if(!this.state.desiredPlaying){this.state.phase='paused';this.clearTimer();this.flushHistory();this.saveSession()}break
+      case'paused':if(!this.state.desiredPlaying){this.state.phase='paused';if(this.pausedAt===null)this.pausedAt=this.clock();this.clearTimer();this.flushHistory();this.saveSession()}break
       case'seeking':this.lastPosition=event.positionMs;this.lastProgressAt=this.clock();this.saveSession();break
       case'progress':{
         const now=this.clock(),difference=event.positionMs-this.lastPosition,elapsed=now-this.lastProgressAt
@@ -434,9 +464,13 @@ export class PlayerController {
     }this.emit()
   }
   private mediaFailed(error:PlayerError):void{
-    if(error.code==='MEDIA_PLAY_BLOCKED'){this.state.desiredPlaying=false;this.state.phase='paused';this.state.reason=playerMessage(error);this.clearTimer();this.emit();return}
+    if(error.code==='MEDIA_PLAY_BLOCKED'){this.state.desiredPlaying=false;this.state.phase='paused';if(this.pausedAt===null)this.pausedAt=this.clock();this.state.reason=playerMessage(error);this.clearTimer();this.emit();return}
+    if(!this.state.desiredPlaying&&this.state.phase==='paused'){
+      this.flushHistory();this.release();this.generation++;this.state.reason=null;this.saveSession();this.emit();return
+    }
     if(this.state.now?.candidate&&this.attempts.used<this.attempts.limit){
-      const candidate=this.state.now.candidate;this.release();this.sources.invalidate(candidate);this.generation++;this.state.phase='resolving';this.state.reason='正在重新获取播放资源…';this.emit();void this.resolveCurrent(true,true);return
+      const candidate=this.state.now.candidate;if(this.state.now.fromCache||error.code==='MEDIA_DURATION_MISMATCH')this.sources.invalidate(candidate)
+      this.release();this.generation++;this.state.phase='resolving';this.state.reason='正在重新获取播放资源…';this.emit();void this.resolveCurrent(true,true);return
     }
     this.failed(error)
   }

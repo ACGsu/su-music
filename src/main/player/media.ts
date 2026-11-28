@@ -39,6 +39,7 @@ export class MediaRegistry{
   close():void{for(const id of this.resources.keys())this.revoke(id)}
   failure(id:string):string|null{return this.failures.get(id)??null}
   quality(id:string):AudioHeader|null{return this.qualities.get(id)??null}
+  isRemote(id:string):boolean{return this.resources.get(id)?.source.kind==='remote'}
   protectedFiles():string[]{return [...this.resources.values()].flatMap(entry=>entry.source.kind==='file'&&entry.source.cacheIdentity?[entry.source.filename]:[])}
   private observe(id:string,kind:string,status:number,range:string|null,totalBytes:number|null):typeof this.observations[number]{const entry={id,kind,status,range,totalBytes,receivedBytes:0,cancelled:false,finished:false};this.observations.push(entry);if(this.observations.length>500)this.observations.splice(0,250);return entry}
   async respond(request:Request):Promise<Response>{

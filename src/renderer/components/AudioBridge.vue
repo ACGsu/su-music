@@ -19,6 +19,8 @@ function applyPlaying():void{
   const element=audio.value,player=props.player,id=active,load=epoch
   if(!element||!id||!player?.media||player.media.id!==id)return
   if(!player.desiredPlaying){element.pause();return}
+  if(element.error){report('error',id,element.error.code??4);return}
+  if(player.seekToMs>0&&element.readyState<1)return
   if(!element.paused)return
   void element.play().catch(error=>{if(load!==epoch||active!==id||!props.player?.desiredPlaying||error?.name==='AbortError')return;report('error',id,error?.name==='NotAllowedError'?5:element.error?.code??4)})
 }
@@ -36,7 +38,7 @@ watch(()=>props.player?.media?.id??null,async()=>{
   listen('pause',()=>report('paused',media.id))
   listen('waiting',()=>report('waiting',media.id))
   listen('seeking',()=>report('seeking',media.id))
-  listen('timeupdate',()=>{if(performance.now()-lastProgress>=450){lastProgress=performance.now();report('progress',media.id)}})
+  listen('timeupdate',()=>{if(element.seeking||props.player&&props.player.seekToMs>0&&lastSeek!==props.player.seekSerial)return;if(performance.now()-lastProgress>=450){lastProgress=performance.now();report('progress',media.id)}})
   listen('ended',()=>{report('progress',media.id);report('ended',media.id)})
   listen('error',()=>report('error',media.id,element.error?.code??4))
   detach=()=>{for(const item of listeners)element.removeEventListener(item.type,item.handler)}
